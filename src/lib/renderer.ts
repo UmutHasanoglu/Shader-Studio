@@ -69,7 +69,6 @@ export class ShaderRenderer {
     gl.deleteShader(vertexShader);
     gl.deleteShader(fragmentShader);
 
-    // Cache uniform locations
     this.uniforms.clear();
     const numUniforms = gl.getProgramParameter(this.program, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < numUniforms; i++) {
@@ -93,7 +92,6 @@ export class ShaderRenderer {
 
     gl.useProgram(this.program);
 
-    // Set built-in uniforms
     const timeLoc = this.uniforms.get('iTime');
     if (timeLoc) gl.uniform1f(timeLoc, time);
 
@@ -103,7 +101,6 @@ export class ShaderRenderer {
     const frameLoc = this.uniforms.get('iFrame');
     if (frameLoc) gl.uniform1i(frameLoc, Math.floor(time * 30));
 
-    // Set custom uniforms
     for (const [name, value] of Object.entries(uniformValues)) {
       const loc = this.uniforms.get(name);
       if (!loc) continue;
@@ -117,14 +114,12 @@ export class ShaderRenderer {
       }
     }
 
-    // Draw
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     const posAttr = gl.getAttribLocation(this.program, 'position');
     gl.enableVertexAttribArray(posAttr);
     gl.vertexAttribPointer(posAttr, 3, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-    // Force GPU to finish rendering before reading
     gl.finish();
   }
 
@@ -160,10 +155,6 @@ export class ShaderRenderer {
     return this.canvas;
   }
 
-  /**
-   * Read raw RGBA pixel data from the current frame.
-   * Flips vertically since WebGL reads bottom-to-top.
-   */
   readPixels(): Uint8Array {
     const gl = this.gl;
     const w = this.canvas.width;
@@ -171,7 +162,6 @@ export class ShaderRenderer {
     const pixels = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
 
-    // Flip vertically
     const rowSize = w * 4;
     const row = new Uint8Array(rowSize);
     for (let y = 0; y < Math.floor(h / 2); y++) {
@@ -197,163 +187,10 @@ export class ShaderRenderer {
 }
 
 /**
- * Helper: convert canvas content to a PNG Uint8Array.
- * Only one frame of pixels is in memory at a time.
+ * Record WebM using MediaRecorder with proper frame pacing.
+ * This uses the browser's hardware-accelerated VP9 encoder — fast and reliable.
  */
-function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      async (blob) => {
-        if (!blob) { reject(new Error('toBlob failed')); return; }
-        const ab = await blob.arrayBuffer();
-        resolve(new Uint8Array(ab));
-      },
-      'image/png',
-    );
-  });
-}
-
-/**
- * Export video using FFmpeg WASM for proper H.264/ProRes/VP9 encoding.
- *
- * Memory-efficient: renders one frame at a time as PNG, writes each to
- * FFmpeg's virtual FS, then encodes the image sequence. Peak memory is
- * only ~1 frame of raw pixels + 1 compressed PNG, not all frames at once.
- */
-export async function exportVideo(
-  fragmentShader: string,
-  uniformValues: Record<string, number | number[] | string>,
-  settings: ExportSettings,
-  onProgress: (progress: number, stage: string) => void,
-  vertexShader?: string,
-): Promise<Blob> {
-  const { resolution, fps, duration, codec, container, bitrateMbps, pixelFormat } = settings;
-
-  // Stage 1: Load FFmpeg first so we can stream frames into its FS
-  onProgress(0, 'Loading encoder...');
-
-  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-
-  const ffmpeg = new FFmpeg();
-  await ffmpeg.load({
-    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
-    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm',
-  });
-
-  // Stage 2: Render frames one at a time and write as PNGs to FFmpeg FS
-  onProgress(0.05, 'Rendering frames...');
-
-  const canvas = document.createElement('canvas');
-  canvas.width = resolution.width;
-  canvas.height = resolution.height;
-
-  const renderer = new ShaderRenderer(canvas);
-  const compiled = renderer.compileShader(fragmentShader, vertexShader);
-  if (!compiled) {
-    renderer.destroy();
-    throw new Error('Failed to compile shader for export');
-  }
-
-  const totalFrames = Math.ceil(duration * fps);
-  const frameDuration = 1 / fps;
-
-  for (let i = 0; i < totalFrames; i++) {
-    const time = i * frameDuration;
-    renderer.renderFrame(time, uniformValues);
-
-    // Convert current canvas to PNG (compressed, ~2-5MB vs ~33MB raw per 4K frame)
-    const pngData = await canvasToPngBytes(canvas);
-    const filename = `frame${i.toString().padStart(6, '0')}.png`;
-    await ffmpeg.writeFile(filename, pngData);
-
-    if (i % 3 === 0) {
-      onProgress(0.05 + (i / totalFrames) * 0.6, `Rendering frame ${i + 1}/${totalFrames}`);
-      await new Promise((r) => setTimeout(r, 0));
-    }
-  }
-
-  renderer.destroy();
-
-  // Stage 3: Encode the PNG image sequence
-  const w = resolution.width;
-  const h = resolution.height;
-
-  let codecArgs: string[];
-  switch (codec) {
-    case 'h264':
-      codecArgs = [
-        '-c:v', 'libx264',
-        '-pix_fmt', pixelFormat === 'yuv422p10le' ? 'yuv422p' : 'yuv420p',
-        '-b:v', `${bitrateMbps}M`,
-        '-maxrate', `${Math.round(bitrateMbps * 1.5)}M`,
-        '-bufsize', `${Math.round(bitrateMbps * 2)}M`,
-        '-preset', 'slow',
-        '-profile:v', 'high',
-        '-level', '5.1',
-        '-movflags', '+faststart',
-      ];
-      break;
-    case 'prores':
-      codecArgs = [
-        '-c:v', 'prores_ks',
-        '-profile:v', '3', // ProRes 422 HQ
-        '-pix_fmt', 'yuv422p10le',
-        '-vendor', 'apl0',
-      ];
-      break;
-    case 'vp9':
-      codecArgs = [
-        '-c:v', 'libvpx-vp9',
-        '-pix_fmt', 'yuv420p',
-        '-b:v', `${bitrateMbps}M`,
-        '-crf', '18',
-      ];
-      break;
-    default:
-      codecArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-b:v', `${bitrateMbps}M`];
-  }
-
-  const outputFile = `output.${container}`;
-
-  onProgress(0.7, `Encoding ${codec.toUpperCase()} ${container.toUpperCase()}...`);
-
-  await ffmpeg.exec([
-    '-framerate', `${fps}`,
-    '-i', 'frame%06d.png',
-    ...codecArgs,
-    '-an',
-    outputFile,
-  ]);
-
-  onProgress(0.95, 'Finalizing...');
-
-  const data = await ffmpeg.readFile(outputFile);
-  const mimeTypes: Record<string, string> = {
-    mp4: 'video/mp4',
-    mov: 'video/quicktime',
-    webm: 'video/webm',
-  };
-
-  // Clean up frame files from FFmpeg FS
-  for (let i = 0; i < totalFrames; i++) {
-    try {
-      await ffmpeg.deleteFile(`frame${i.toString().padStart(6, '0')}.png`);
-    } catch { /* ignore cleanup errors */ }
-  }
-  try { await ffmpeg.deleteFile(outputFile); } catch { /* ignore */ }
-
-  // Copy into a plain ArrayBuffer to satisfy BlobPart (FFmpeg may use SharedArrayBuffer)
-  const raw = data instanceof Uint8Array ? data : new TextEncoder().encode(data as string);
-  const buf = new ArrayBuffer(raw.byteLength);
-  new Uint8Array(buf).set(raw);
-  return new Blob([buf], { type: mimeTypes[container] || 'video/mp4' });
-}
-
-/**
- * Fallback export using MediaRecorder (WebM only).
- * Fixed: paces frames at real frame rate for correct duration.
- */
-export async function exportVideoFallback(
+function recordWebM(
   fragmentShader: string,
   uniformValues: Record<string, number | number[] | string>,
   settings: ExportSettings,
@@ -399,7 +236,6 @@ export async function exportVideoFallback(
       reject(e);
     };
 
-    // Request data every 100ms to keep chunks flowing
     mediaRecorder.start(100);
 
     let frame = 0;
@@ -419,7 +255,7 @@ export async function exportVideoFallback(
       }
 
       frame++;
-      onProgress(frame / totalFrames, `Rendering frame ${frame}/${totalFrames}`);
+      onProgress(frame / totalFrames, `Recording frame ${frame}/${totalFrames}`);
 
       // Pace at real frame rate for correct video duration
       setTimeout(renderNextFrame, frameTimeMs);
@@ -427,6 +263,168 @@ export async function exportVideoFallback(
 
     renderNextFrame();
   });
+}
+
+/**
+ * Load FFmpeg WASM and convert a WebM blob to the target container/codec.
+ * This is a fast remux/transcode since the source is already compressed.
+ */
+async function convertWithFFmpeg(
+  webmBlob: Blob,
+  settings: ExportSettings,
+  onProgress: (progress: number, stage: string) => void,
+): Promise<Blob> {
+  onProgress(0, 'Loading converter...');
+
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+
+  const ffmpeg = new FFmpeg();
+
+  // Log progress from FFmpeg
+  ffmpeg.on('log', ({ message }) => {
+    // Parse FFmpeg time= output for progress
+    const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+    if (timeMatch) {
+      const secs = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseFloat(timeMatch[3]);
+      const pct = Math.min(secs / settings.duration, 0.99);
+      onProgress(pct, `Converting... ${Math.round(pct * 100)}%`);
+    }
+  });
+
+  await ffmpeg.load({
+    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
+    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm',
+  });
+
+  onProgress(0.05, 'Writing source...');
+  const webmData = new Uint8Array(await webmBlob.arrayBuffer());
+  await ffmpeg.writeFile('input.webm', webmData);
+
+  const { codec, container, bitrateMbps, pixelFormat } = settings;
+
+  let codecArgs: string[];
+  switch (codec) {
+    case 'h264':
+      codecArgs = [
+        '-c:v', 'libx264',
+        '-pix_fmt', pixelFormat === 'yuv422p10le' ? 'yuv422p' : 'yuv420p',
+        '-b:v', `${bitrateMbps}M`,
+        '-maxrate', `${Math.round(bitrateMbps * 1.5)}M`,
+        '-bufsize', `${Math.round(bitrateMbps * 2)}M`,
+        '-preset', 'ultrafast',
+        '-profile:v', 'high',
+        '-movflags', '+faststart',
+      ];
+      break;
+    case 'prores':
+      codecArgs = [
+        '-c:v', 'prores_ks',
+        '-profile:v', '3',
+        '-pix_fmt', 'yuv422p10le',
+        '-vendor', 'apl0',
+      ];
+      break;
+    case 'vp9':
+      // Already VP9 WebM — just copy
+      codecArgs = ['-c:v', 'copy'];
+      break;
+    default:
+      codecArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast'];
+  }
+
+  const outputFile = `output.${container}`;
+
+  onProgress(0.1, `Converting to ${codec.toUpperCase()} .${container.toUpperCase()}...`);
+
+  await ffmpeg.exec([
+    '-i', 'input.webm',
+    ...codecArgs,
+    '-an',
+    outputFile,
+  ]);
+
+  onProgress(0.95, 'Finalizing...');
+
+  const data = await ffmpeg.readFile(outputFile);
+
+  // Cleanup
+  try { await ffmpeg.deleteFile('input.webm'); } catch { /* ignore */ }
+  try { await ffmpeg.deleteFile(outputFile); } catch { /* ignore */ }
+
+  const mimeTypes: Record<string, string> = {
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    webm: 'video/webm',
+  };
+
+  const raw = data instanceof Uint8Array ? data : new TextEncoder().encode(data as string);
+  const buf = new ArrayBuffer(raw.byteLength);
+  new Uint8Array(buf).set(raw);
+  return new Blob([buf], { type: mimeTypes[container] || 'video/mp4' });
+}
+
+/**
+ * Main export function.
+ *
+ * Strategy: Always record with MediaRecorder first (fast, hardware-accelerated),
+ * then convert to the target format with FFmpeg WASM if needed.
+ *
+ * - WebM VP9: Direct output from MediaRecorder (no FFmpeg needed)
+ * - MP4 H.264: Record WebM → transcode with FFmpeg WASM
+ * - MOV ProRes: Record WebM → transcode with FFmpeg WASM
+ */
+export async function exportVideo(
+  fragmentShader: string,
+  uniformValues: Record<string, number | number[] | string>,
+  settings: ExportSettings,
+  onProgress: (progress: number, stage: string) => void,
+  vertexShader?: string,
+): Promise<Blob> {
+  const { codec, container } = settings;
+  const needsConversion = !(codec === 'vp9' && container === 'webm');
+
+  // Step 1: Record to WebM (always fast — uses browser's hardware encoder)
+  const webmBlob = await recordWebM(
+    fragmentShader,
+    uniformValues,
+    settings,
+    (p, stage) => {
+      if (needsConversion) {
+        // Recording is 60% of the total, conversion is 40%
+        onProgress(p * 0.6, stage);
+      } else {
+        onProgress(p, stage);
+      }
+    },
+    vertexShader,
+  );
+
+  // Step 2: If target is already WebM VP9, we're done
+  if (!needsConversion) {
+    return webmBlob;
+  }
+
+  // Step 3: Convert WebM → target format with FFmpeg WASM
+  return convertWithFFmpeg(
+    webmBlob,
+    settings,
+    (p, stage) => {
+      onProgress(0.6 + p * 0.4, stage);
+    },
+  );
+}
+
+/**
+ * Direct WebM export (no FFmpeg, for when FFmpeg fails).
+ */
+export async function exportVideoFallback(
+  fragmentShader: string,
+  uniformValues: Record<string, number | number[] | string>,
+  settings: ExportSettings,
+  onProgress: (progress: number, stage: string) => void,
+  vertexShader?: string,
+): Promise<Blob> {
+  return recordWebM(fragmentShader, uniformValues, settings, onProgress, vertexShader);
 }
 
 /**
