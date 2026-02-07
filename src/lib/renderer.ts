@@ -1,4 +1,4 @@
-import type { ShaderUniform, ExportSettings } from '@/types';
+import type { ExportSettings } from '@/types';
 import { DEFAULT_VERTEX_SHADER } from '@/shaders/templates';
 
 export class ShaderRenderer {
@@ -14,7 +14,8 @@ export class ShaderRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true })
+      || canvas.getContext('webgl', { preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL not supported');
     this.gl = gl;
     this.initBuffer();
@@ -122,6 +123,9 @@ export class ShaderRenderer {
     gl.enableVertexAttribArray(posAttr);
     gl.vertexAttribPointer(posAttr, 3, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Force GPU to finish rendering before reading
+    gl.finish();
   }
 
   start(uniformValues: Record<string, number | number[] | string> = {}) {
@@ -156,6 +160,31 @@ export class ShaderRenderer {
     return this.canvas;
   }
 
+  /**
+   * Read raw RGBA pixel data from the current frame.
+   * Flips vertically since WebGL reads bottom-to-top.
+   */
+  readPixels(): Uint8Array {
+    const gl = this.gl;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const pixels = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    // Flip vertically
+    const rowSize = w * 4;
+    const row = new Uint8Array(rowSize);
+    for (let y = 0; y < Math.floor(h / 2); y++) {
+      const topOffset = y * rowSize;
+      const bottomOffset = (h - 1 - y) * rowSize;
+      row.set(pixels.subarray(topOffset, topOffset + rowSize));
+      pixels.copyWithin(topOffset, bottomOffset, bottomOffset + rowSize);
+      pixels.set(row, bottomOffset);
+    }
+
+    return pixels;
+  }
+
   captureFrame(): string {
     return this.canvas.toDataURL('image/png');
   }
@@ -168,19 +197,21 @@ export class ShaderRenderer {
 }
 
 /**
- * Export animation as video using MediaRecorder + OffscreenCanvas approach.
- * Renders frame-by-frame at the exact fps for deterministic output.
+ * Export video using FFmpeg WASM for proper H.264/ProRes/VP9 encoding.
+ * Renders frame-by-frame with deterministic timing, then encodes with FFmpeg.
  */
 export async function exportVideo(
   fragmentShader: string,
   uniformValues: Record<string, number | number[] | string>,
   settings: ExportSettings,
-  onProgress: (progress: number) => void,
+  onProgress: (progress: number, stage: string) => void,
   vertexShader?: string,
 ): Promise<Blob> {
-  const { resolution, fps, duration, format, quality } = settings;
+  const { resolution, fps, duration, codec, container, bitrateMbps, pixelFormat } = settings;
 
-  // Create offscreen canvas at target resolution
+  // Stage 1: Render all frames
+  onProgress(0, 'Rendering frames...');
+
   const canvas = document.createElement('canvas');
   canvas.width = resolution.width;
   canvas.height = resolution.height;
@@ -194,13 +225,141 @@ export async function exportVideo(
 
   const totalFrames = Math.ceil(duration * fps);
   const frameDuration = 1 / fps;
+  const w = resolution.width;
+  const h = resolution.height;
+  const frameSize = w * h * 4;
 
-  // Use MediaRecorder for WebM
+  // Render frames and collect as one contiguous buffer for FFmpeg
+  // For large exports, write in chunks to avoid memory issues
+  const allFrames = new Uint8Array(totalFrames * frameSize);
+
+  for (let i = 0; i < totalFrames; i++) {
+    const time = i * frameDuration;
+    renderer.renderFrame(time, uniformValues);
+    const pixels = renderer.readPixels();
+    allFrames.set(pixels, i * frameSize);
+
+    if (i % 5 === 0) {
+      onProgress((i + 1) / totalFrames * 0.5, `Rendering frame ${i + 1}/${totalFrames}`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  renderer.destroy();
+
+  // Stage 2: Encode with FFmpeg WASM
+  onProgress(0.5, 'Loading encoder...');
+
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+
+  const ffmpeg = new FFmpeg();
+  await ffmpeg.load({
+    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
+    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm',
+  });
+
+  onProgress(0.6, 'Writing frame data...');
+  await ffmpeg.writeFile('input.raw', allFrames);
+
+  // Build encoder-specific arguments
+  let codecArgs: string[];
+  switch (codec) {
+    case 'h264':
+      codecArgs = [
+        '-c:v', 'libx264',
+        '-pix_fmt', pixelFormat === 'yuv422p10le' ? 'yuv422p' : 'yuv420p',
+        '-b:v', `${bitrateMbps}M`,
+        '-maxrate', `${Math.round(bitrateMbps * 1.5)}M`,
+        '-bufsize', `${Math.round(bitrateMbps * 2)}M`,
+        '-preset', 'slow',
+        '-profile:v', 'high',
+        '-level', '5.1',
+        '-movflags', '+faststart',
+      ];
+      break;
+    case 'prores':
+      codecArgs = [
+        '-c:v', 'prores_ks',
+        '-profile:v', '3', // ProRes 422 HQ
+        '-pix_fmt', 'yuv422p10le',
+        '-vendor', 'apl0',
+      ];
+      break;
+    case 'vp9':
+      codecArgs = [
+        '-c:v', 'libvpx-vp9',
+        '-pix_fmt', 'yuv420p',
+        '-b:v', `${bitrateMbps}M`,
+        '-crf', '18',
+      ];
+      break;
+    default:
+      codecArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-b:v', `${bitrateMbps}M`];
+  }
+
+  const outputFile = `output.${container}`;
+
+  onProgress(0.7, `Encoding ${codec.toUpperCase()} ${container.toUpperCase()}...`);
+
+  await ffmpeg.exec([
+    '-f', 'rawvideo',
+    '-pixel_format', 'rgba',
+    '-video_size', `${w}x${h}`,
+    '-framerate', `${fps}`,
+    '-i', 'input.raw',
+    ...codecArgs,
+    '-an', // no audio
+    outputFile,
+  ]);
+
+  onProgress(0.95, 'Finalizing...');
+
+  const data = await ffmpeg.readFile(outputFile);
+  const mimeTypes: Record<string, string> = {
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    webm: 'video/webm',
+  };
+
+  // Copy into a plain ArrayBuffer to satisfy BlobPart (FFmpeg may use SharedArrayBuffer)
+  const raw = data instanceof Uint8Array ? data : new TextEncoder().encode(data as string);
+  const buf = new ArrayBuffer(raw.byteLength);
+  new Uint8Array(buf).set(raw);
+  return new Blob([buf], { type: mimeTypes[container] || 'video/mp4' });
+}
+
+/**
+ * Fallback export using MediaRecorder (WebM only).
+ * Fixed: paces frames at real frame rate for correct duration.
+ */
+export async function exportVideoFallback(
+  fragmentShader: string,
+  uniformValues: Record<string, number | number[] | string>,
+  settings: ExportSettings,
+  onProgress: (progress: number, stage: string) => void,
+  vertexShader?: string,
+): Promise<Blob> {
+  const { resolution, fps, duration, bitrateMbps } = settings;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = resolution.width;
+  canvas.height = resolution.height;
+
+  const renderer = new ShaderRenderer(canvas);
+  const compiled = renderer.compileShader(fragmentShader, vertexShader);
+  if (!compiled) {
+    renderer.destroy();
+    throw new Error('Failed to compile shader for export');
+  }
+
+  const totalFrames = Math.ceil(duration * fps);
+  const frameDuration = 1 / fps;
+  const frameTimeMs = 1000 / fps;
+
   const stream = canvas.captureStream(0);
-  const mimeType = format === 'webm' ? 'video/webm;codecs=vp9' : 'video/webm';
   const mediaRecorder = new MediaRecorder(stream, {
-    mimeType,
-    videoBitsPerSecond: Math.round(resolution.width * resolution.height * fps * quality * 0.15),
+    mimeType: 'video/webm;codecs=vp9',
+    videoBitsPerSecond: bitrateMbps * 1_000_000,
   });
 
   const chunks: Blob[] = [];
@@ -211,8 +370,7 @@ export async function exportVideo(
   return new Promise((resolve, reject) => {
     mediaRecorder.onstop = () => {
       renderer.destroy();
-      const blob = new Blob(chunks, { type: `video/${format}` });
-      resolve(blob);
+      resolve(new Blob(chunks, { type: 'video/webm' }));
     };
 
     mediaRecorder.onerror = (e) => {
@@ -220,30 +378,30 @@ export async function exportVideo(
       reject(e);
     };
 
-    mediaRecorder.start();
+    // Request data every 100ms to keep chunks flowing
+    mediaRecorder.start(100);
 
     let frame = 0;
 
     function renderNextFrame() {
       if (frame >= totalFrames) {
-        mediaRecorder.stop();
+        setTimeout(() => mediaRecorder.stop(), 200);
         return;
       }
 
       const time = frame * frameDuration;
       renderer.renderFrame(time, uniformValues);
 
-      // Request frame from the capture stream
       const track = stream.getVideoTracks()[0] as any;
       if (track.requestFrame) {
         track.requestFrame();
       }
 
       frame++;
-      onProgress(frame / totalFrames);
+      onProgress(frame / totalFrames, `Rendering frame ${frame}/${totalFrames}`);
 
-      // Use setTimeout to avoid blocking the UI
-      setTimeout(renderNextFrame, 0);
+      // Pace at real frame rate for correct video duration
+      setTimeout(renderNextFrame, frameTimeMs);
     }
 
     renderNextFrame();
