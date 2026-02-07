@@ -405,13 +405,19 @@ export async function exportVideo(
   }
 
   // Step 3: Convert WebM → target format with FFmpeg WASM
-  return convertWithFFmpeg(
-    webmBlob,
-    settings,
-    (p, stage) => {
-      onProgress(0.6 + p * 0.4, stage);
-    },
-  );
+  try {
+    return await convertWithFFmpeg(
+      webmBlob,
+      settings,
+      (p, stage) => {
+        onProgress(0.6 + p * 0.4, stage);
+      },
+    );
+  } catch (err) {
+    console.warn('FFmpeg conversion failed, returning WebM instead:', err);
+    onProgress(1, 'FFmpeg unavailable — saved as WebM');
+    return webmBlob;
+  }
 }
 
 /**

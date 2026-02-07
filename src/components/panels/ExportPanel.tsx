@@ -148,12 +148,36 @@ export function ExportPanel() {
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export failed:', err);
-      const msg = (err as Error).message;
-      if (msg.includes('FFmpeg') || msg.includes('SharedArrayBuffer') || msg.includes('ffmpeg')) {
-        alert(
-          'FFmpeg encoding failed. This likely means your browser blocks SharedArrayBuffer.\n\n' +
-          'Try:\n1. Use the "WebM Fallback" option below\n2. Use Chrome with proper COOP/COEP headers\n3. Use a localhost dev server\n\nError: ' + msg,
-        );
+      const msg = String(err && typeof err === 'object' && 'message' in err ? (err as Error).message : err);
+      const isFFmpegError = /ffmpeg|sharedarraybuffer|cross-origin/i.test(msg);
+
+      if (isFFmpegError && !useFallback) {
+        // Auto-retry with WebM fallback
+        setExportStage('FFmpeg unavailable, falling back to WebM...');
+        try {
+          const shaderCode = getShaderCode();
+          if (shaderCode) {
+            const settings = { ...exportSettings, duration, fps: exportSettings.fps };
+            const blob = await exportVideoFallback(
+              shaderCode,
+              getUniformValues(),
+              settings,
+              (p, stage) => { setExportProgress(p); setExportStage(stage); },
+              activeTemplate?.vertexShader,
+            );
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `shader-studio-${Date.now()}.webm`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('FFmpeg encoding is not available in this browser. Your video was exported as WebM instead.\n\nTo get MP4/MOV export, run the dev server with:\n  npx next dev\n(localhost enables SharedArrayBuffer)');
+            return;
+          }
+        } catch (fallbackErr) {
+          console.error('Fallback also failed:', fallbackErr);
+        }
+        alert('Export failed. Try checking the "WebM fallback" option and export again.\n\nError: ' + msg);
       } else {
         alert('Export failed: ' + msg);
       }
