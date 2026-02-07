@@ -197,8 +197,28 @@ export class ShaderRenderer {
 }
 
 /**
+ * Helper: convert canvas content to a PNG Uint8Array.
+ * Only one frame of pixels is in memory at a time.
+ */
+function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      async (blob) => {
+        if (!blob) { reject(new Error('toBlob failed')); return; }
+        const ab = await blob.arrayBuffer();
+        resolve(new Uint8Array(ab));
+      },
+      'image/png',
+    );
+  });
+}
+
+/**
  * Export video using FFmpeg WASM for proper H.264/ProRes/VP9 encoding.
- * Renders frame-by-frame with deterministic timing, then encodes with FFmpeg.
+ *
+ * Memory-efficient: renders one frame at a time as PNG, writes each to
+ * FFmpeg's virtual FS, then encodes the image sequence. Peak memory is
+ * only ~1 frame of raw pixels + 1 compressed PNG, not all frames at once.
  */
 export async function exportVideo(
   fragmentShader: string,
@@ -209,8 +229,19 @@ export async function exportVideo(
 ): Promise<Blob> {
   const { resolution, fps, duration, codec, container, bitrateMbps, pixelFormat } = settings;
 
-  // Stage 1: Render all frames
-  onProgress(0, 'Rendering frames...');
+  // Stage 1: Load FFmpeg first so we can stream frames into its FS
+  onProgress(0, 'Loading encoder...');
+
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+
+  const ffmpeg = new FFmpeg();
+  await ffmpeg.load({
+    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
+    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm',
+  });
+
+  // Stage 2: Render frames one at a time and write as PNGs to FFmpeg FS
+  onProgress(0.05, 'Rendering frames...');
 
   const canvas = document.createElement('canvas');
   canvas.width = resolution.width;
@@ -225,43 +256,28 @@ export async function exportVideo(
 
   const totalFrames = Math.ceil(duration * fps);
   const frameDuration = 1 / fps;
-  const w = resolution.width;
-  const h = resolution.height;
-  const frameSize = w * h * 4;
-
-  // Render frames and collect as one contiguous buffer for FFmpeg
-  // For large exports, write in chunks to avoid memory issues
-  const allFrames = new Uint8Array(totalFrames * frameSize);
 
   for (let i = 0; i < totalFrames; i++) {
     const time = i * frameDuration;
     renderer.renderFrame(time, uniformValues);
-    const pixels = renderer.readPixels();
-    allFrames.set(pixels, i * frameSize);
 
-    if (i % 5 === 0) {
-      onProgress((i + 1) / totalFrames * 0.5, `Rendering frame ${i + 1}/${totalFrames}`);
+    // Convert current canvas to PNG (compressed, ~2-5MB vs ~33MB raw per 4K frame)
+    const pngData = await canvasToPngBytes(canvas);
+    const filename = `frame${i.toString().padStart(6, '0')}.png`;
+    await ffmpeg.writeFile(filename, pngData);
+
+    if (i % 3 === 0) {
+      onProgress(0.05 + (i / totalFrames) * 0.6, `Rendering frame ${i + 1}/${totalFrames}`);
       await new Promise((r) => setTimeout(r, 0));
     }
   }
 
   renderer.destroy();
 
-  // Stage 2: Encode with FFmpeg WASM
-  onProgress(0.5, 'Loading encoder...');
+  // Stage 3: Encode the PNG image sequence
+  const w = resolution.width;
+  const h = resolution.height;
 
-  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-
-  const ffmpeg = new FFmpeg();
-  await ffmpeg.load({
-    coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js',
-    wasmURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm',
-  });
-
-  onProgress(0.6, 'Writing frame data...');
-  await ffmpeg.writeFile('input.raw', allFrames);
-
-  // Build encoder-specific arguments
   let codecArgs: string[];
   switch (codec) {
     case 'h264':
@@ -302,13 +318,10 @@ export async function exportVideo(
   onProgress(0.7, `Encoding ${codec.toUpperCase()} ${container.toUpperCase()}...`);
 
   await ffmpeg.exec([
-    '-f', 'rawvideo',
-    '-pixel_format', 'rgba',
-    '-video_size', `${w}x${h}`,
     '-framerate', `${fps}`,
-    '-i', 'input.raw',
+    '-i', 'frame%06d.png',
     ...codecArgs,
-    '-an', // no audio
+    '-an',
     outputFile,
   ]);
 
@@ -320,6 +333,14 @@ export async function exportVideo(
     mov: 'video/quicktime',
     webm: 'video/webm',
   };
+
+  // Clean up frame files from FFmpeg FS
+  for (let i = 0; i < totalFrames; i++) {
+    try {
+      await ffmpeg.deleteFile(`frame${i.toString().padStart(6, '0')}.png`);
+    } catch { /* ignore cleanup errors */ }
+  }
+  try { await ffmpeg.deleteFile(outputFile); } catch { /* ignore */ }
 
   // Copy into a plain ArrayBuffer to satisfy BlobPart (FFmpeg may use SharedArrayBuffer)
   const raw = data instanceof Uint8Array ? data : new TextEncoder().encode(data as string);
