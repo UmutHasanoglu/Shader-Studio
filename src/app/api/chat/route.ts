@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
         },
         body: JSON.stringify({
           model: model || 'gpt-4o',
-          max_tokens: 4096,
+          max_completion_tokens: 4096,
           messages: messages.map((m: any) => ({
             role: m.role,
             content: m.content,

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
-import { useStudioStore } from '@/store/store';
+import React, { useCallback, useState, useRef } from 'react';
+import { useStudioStore, type ExportQueueItem } from '@/store/store';
 import { exportVideo, exportVideoFallback, captureHighResFrame } from '@/lib/renderer';
 import { exportSVGVideo, renderSVGFrame } from '@/lib/svg-renderer';
 import {
@@ -33,10 +33,18 @@ export function ExportPanel() {
     activeSVGAnimation,
     duration,
     fps,
+    exportQueue,
+    isProcessingQueue,
+    addToExportQueue,
+    removeFromExportQueue,
+    clearExportQueue,
+    updateQueueItem,
+    setProcessingQueue,
   } = useStudioStore();
 
   const [exportStage, setExportStage] = useState('');
   const [useFallback, setUseFallback] = useState(false);
+  const processingRef = useRef(false);
 
   const getShaderCode = () => {
     if (customShaderCode) return customShaderCode;
@@ -235,6 +243,71 @@ export function ExportPanel() {
       alert('Capture failed: ' + (err as Error).message);
     }
   }, [activeTemplate, uniformOverrides, customShaderCode, currentTime, exportSettings, activeTab, activeSVGAnimation, duration]);
+
+  const handleAddToQueue = useCallback(() => {
+    const shaderCode = getShaderCode();
+    if (!shaderCode) {
+      alert('No shader code to export');
+      return;
+    }
+
+    const item: ExportQueueItem = {
+      id: 'queue-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+      name: activeTemplate?.name || 'Custom Shader',
+      fragmentShader: shaderCode,
+      vertexShader: activeTemplate?.vertexShader,
+      uniformValues: getUniformValues(),
+      settings: { ...exportSettings, duration },
+      duration,
+      status: 'pending',
+      progress: 0,
+      stage: 'Queued',
+    };
+
+    addToExportQueue(item);
+  }, [activeTemplate, uniformOverrides, customShaderCode, exportSettings, duration, addToExportQueue]);
+
+  const processQueue = useCallback(async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setProcessingQueue(true);
+
+    const queue = useStudioStore.getState().exportQueue;
+    const pendingItems = queue.filter((i) => i.status === 'pending');
+
+    for (const item of pendingItems) {
+      updateQueueItem(item.id, { status: 'exporting', progress: 0, stage: 'Starting...' });
+
+      try {
+        const exportFn = useFallback ? exportVideoFallback : exportVideo;
+        const blob = await exportFn(
+          item.fragmentShader,
+          item.uniformValues,
+          item.settings,
+          (p, stage) => {
+            updateQueueItem(item.id, { progress: p, stage });
+          },
+          item.vertexShader,
+        );
+
+        // Auto-download
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${item.name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.${item.settings.container}`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        updateQueueItem(item.id, { status: 'completed', progress: 1, stage: 'Done', blob });
+      } catch (err) {
+        const msg = String(err && typeof err === 'object' && 'message' in err ? (err as Error).message : err);
+        updateQueueItem(item.id, { status: 'failed', stage: msg, error: msg });
+      }
+    }
+
+    processingRef.current = false;
+    setProcessingQueue(false);
+  }, [useFallback, updateQueueItem, setProcessingQueue]);
 
   const availableResolutions = ASPECT_RESOLUTIONS[exportSettings.aspectRatio] || ASPECT_RESOLUTIONS['16:9'];
   const availableContainers = CODEC_CONTAINERS[exportSettings.codec] || ['mp4'];
@@ -511,14 +584,22 @@ export function ExportPanel() {
       <div className="space-y-2">
         <button
           onClick={handleExportVideo}
-          disabled={isExporting}
+          disabled={isExporting || isProcessingQueue}
           className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
-            isExporting
+            isExporting || isProcessingQueue
               ? 'bg-studio-border text-studio-text-dim cursor-not-allowed'
               : 'bg-indigo-500 hover:bg-indigo-600 text-white'
           }`}
         >
           {isExporting ? 'Exporting...' : `Export ${exportSettings.codec.toUpperCase()} .${exportSettings.container.toUpperCase()}`}
+        </button>
+
+        <button
+          onClick={handleAddToQueue}
+          disabled={isExporting}
+          className="w-full py-2.5 rounded-lg text-sm font-medium bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 transition-colors"
+        >
+          Add to Export Queue
         </button>
 
         <button
@@ -529,6 +610,91 @@ export function ExportPanel() {
           Capture {exportSettings.resolution.width}x{exportSettings.resolution.height} Frame (PNG)
         </button>
       </div>
+
+      {/* Export Queue */}
+      {exportQueue.length > 0 && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs text-studio-text-dim uppercase tracking-wider font-medium">
+              Export Queue ({exportQueue.length})
+            </label>
+            <div className="flex gap-1.5">
+              {!isProcessingQueue && exportQueue.some((i) => i.status === 'pending') && (
+                <button
+                  onClick={processQueue}
+                  className="px-2.5 py-1 text-[10px] rounded bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 transition-colors"
+                >
+                  Start Queue
+                </button>
+              )}
+              <button
+                onClick={clearExportQueue}
+                disabled={isProcessingQueue}
+                className="px-2.5 py-1 text-[10px] rounded bg-red-500/10 text-red-300/60 hover:bg-red-500/20 hover:text-red-300 transition-colors disabled:opacity-50"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1.5 max-h-60 overflow-y-auto">
+            {exportQueue.map((item) => (
+              <div
+                key={item.id}
+                className={`p-2.5 rounded-lg text-xs border ${
+                  item.status === 'completed'
+                    ? 'bg-emerald-500/10 border-emerald-500/20'
+                    : item.status === 'failed'
+                    ? 'bg-red-500/10 border-red-500/20'
+                    : item.status === 'exporting'
+                    ? 'bg-indigo-500/10 border-indigo-500/20'
+                    : 'bg-studio-border/30 border-studio-border/50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-studio-text font-medium truncate mr-2">{item.name}</span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className={`text-[10px] uppercase ${
+                      item.status === 'completed' ? 'text-emerald-300' :
+                      item.status === 'failed' ? 'text-red-300' :
+                      item.status === 'exporting' ? 'text-indigo-300' :
+                      'text-studio-text-dim'
+                    }`}>
+                      {item.status}
+                    </span>
+                    {item.status === 'pending' && (
+                      <button
+                        onClick={() => removeFromExportQueue(item.id)}
+                        className="text-studio-text-dim/40 hover:text-red-300 transition-colors"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="text-studio-text-dim/60 text-[10px]">
+                  {item.settings.resolution.width}x{item.settings.resolution.height} · {item.settings.codec.toUpperCase()} · {item.duration}s
+                </div>
+                {item.status === 'exporting' && (
+                  <div className="mt-1.5">
+                    <div className="h-1 bg-studio-border rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-indigo-500 transition-all duration-300"
+                        style={{ width: `${item.progress * 100}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-studio-text-dim/60 mt-0.5">{item.stage}</p>
+                  </div>
+                )}
+                {item.status === 'failed' && item.error && (
+                  <p className="text-[10px] text-red-300/60 mt-1 truncate">{item.error}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Adobe Stock requirements */}
       <div className="mt-4 p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
