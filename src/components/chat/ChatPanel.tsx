@@ -145,10 +145,22 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         handleApplyCode(code);
       }
     } catch (err) {
+      let errText = 'Unknown error';
+      if (err instanceof Error) {
+        // Try to parse JSON error from API route
+        try {
+          const parsed = JSON.parse(err.message);
+          errText = parsed.error || err.message;
+        } catch {
+          errText = err.message;
+        }
+      } else {
+        errText = String(err);
+      }
       const errorMsg: ChatMessage = {
         id: 'msg-' + Date.now() + '-err',
         role: 'assistant',
-        content: `Error: ${(err as Error).message}`,
+        content: `Error: ${errText}`,
         timestamp: Date.now(),
       };
       addChatMessage(errorMsg);
@@ -228,13 +240,28 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
           </div>
           <div>
             <label className="text-xs text-studio-text-dim block mb-1">Model</label>
-            <input
-              type="text"
+            <select
               value={chatModel}
               onChange={(e) => setChatModel(e.target.value)}
               className="w-full px-2.5 py-1.5 text-xs bg-studio-bg border border-studio-border rounded-lg text-studio-text outline-none focus:border-indigo-500"
-              placeholder="Model name"
-            />
+            >
+              {chatProvider === 'anthropic' ? (
+                <>
+                  <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+                  <option value="claude-opus-4-20250514">Claude Opus 4</option>
+                  <option value="claude-haiku-4-20250514">Claude Haiku 4</option>
+                  <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                </>
+              ) : (
+                <>
+                  <option value="gpt-4o">GPT-4o</option>
+                  <option value="gpt-4o-mini">GPT-4o Mini</option>
+                  <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                  <option value="o1">o1 (Reasoning)</option>
+                  <option value="o3-mini">o3-mini (Reasoning)</option>
+                </>
+              )}
+            </select>
           </div>
         </div>
       )}

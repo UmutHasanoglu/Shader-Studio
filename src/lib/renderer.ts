@@ -1,6 +1,29 @@
 import type { ExportSettings } from '@/types';
 import { DEFAULT_VERTEX_SHADER } from '@/shaders/templates';
 
+/**
+ * Generate a 256x256 RGBA noise texture (procedural, deterministic).
+ * Used as a default for Shadertoy iChannel0-3 when no texture is provided.
+ */
+function generateNoiseTexture(seed: number = 0): Uint8Array {
+  const size = 256;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      // Simple hash-based noise
+      const n1 = Math.sin(x * 127.1 + y * 311.7 + seed * 53.3) * 43758.5453;
+      const n2 = Math.sin(x * 269.5 + y * 183.3 + seed * 97.1) * 43758.5453;
+      const n3 = Math.sin(x * 420.1 + y * 631.7 + seed * 31.7) * 43758.5453;
+      data[i + 0] = ((n1 - Math.floor(n1)) * 255) | 0;
+      data[i + 1] = ((n2 - Math.floor(n2)) * 255) | 0;
+      data[i + 2] = ((n3 - Math.floor(n3)) * 255) | 0;
+      data[i + 3] = 255;
+    }
+  }
+  return data;
+}
+
 export class ShaderRenderer {
   private canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext | WebGLRenderingContext;
@@ -11,6 +34,9 @@ export class ShaderRenderer {
   private uniforms: Map<string, WebGLUniformLocation> = new Map();
   private isRunning = false;
   private frameCallback: ((time: number) => void) | null = null;
+  private noiseTextures: WebGLTexture[] = [];
+  private lastFrameTime: number = 0;
+  private frameCount: number = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -19,6 +45,7 @@ export class ShaderRenderer {
     if (!gl) throw new Error('WebGL not supported');
     this.gl = gl;
     this.initBuffer();
+    this.initNoiseTextures();
   }
 
   private initBuffer() {
@@ -34,6 +61,24 @@ export class ShaderRenderer {
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
   }
 
+  private initNoiseTextures() {
+    const gl = this.gl;
+    // Create 4 noise textures for iChannel0-3
+    for (let i = 0; i < 4; i++) {
+      const tex = gl.createTexture();
+      if (!tex) continue;
+      gl.activeTexture(gl.TEXTURE0 + i);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      const noiseData = generateNoiseTexture(i * 137);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 256, 0, gl.RGBA, gl.UNSIGNED_BYTE, noiseData);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      this.noiseTextures.push(tex);
+    }
+  }
+
   compileShader(fragmentSource: string, vertexSource?: string): boolean {
     const gl = this.gl;
     const vs = vertexSource || DEFAULT_VERTEX_SHADER;
@@ -43,6 +88,7 @@ export class ShaderRenderer {
     gl.compileShader(vertexShader);
     if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
       console.error('Vertex shader error:', gl.getShaderInfoLog(vertexShader));
+      gl.deleteShader(vertexShader);
       return false;
     }
 
@@ -51,6 +97,8 @@ export class ShaderRenderer {
     gl.compileShader(fragmentShader);
     if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
       console.error('Fragment shader error:', gl.getShaderInfoLog(fragmentShader));
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
       return false;
     }
 
@@ -63,6 +111,8 @@ export class ShaderRenderer {
 
     if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
       console.error('Program link error:', gl.getProgramInfoLog(this.program));
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
       return false;
     }
 
@@ -92,6 +142,7 @@ export class ShaderRenderer {
 
     gl.useProgram(this.program);
 
+    // Standard Shadertoy uniforms
     const timeLoc = this.uniforms.get('iTime');
     if (timeLoc) gl.uniform1f(timeLoc, time);
 
@@ -99,8 +150,77 @@ export class ShaderRenderer {
     if (resLoc) gl.uniform2f(resLoc, this.canvas.width, this.canvas.height);
 
     const frameLoc = this.uniforms.get('iFrame');
-    if (frameLoc) gl.uniform1i(frameLoc, Math.floor(time * 30));
+    if (frameLoc) gl.uniform1i(frameLoc, this.frameCount);
 
+    // iMouse - set to center of screen (no interaction for stock footage)
+    const mouseLoc = this.uniforms.get('iMouse');
+    if (mouseLoc) gl.uniform4f(mouseLoc, 0.0, 0.0, 0.0, 0.0);
+
+    // iDate - year, month, day, time in seconds
+    const dateLoc = this.uniforms.get('iDate');
+    if (dateLoc) {
+      const now = new Date();
+      gl.uniform4f(dateLoc,
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds(),
+      );
+    }
+
+    // iTimeDelta
+    const tdLoc = this.uniforms.get('iTimeDelta');
+    if (tdLoc) {
+      const dt = this.lastFrameTime > 0 ? time - this.lastFrameTime : 1 / 30;
+      gl.uniform1f(tdLoc, dt);
+    }
+
+    // iFrameRate
+    const frLoc = this.uniforms.get('iFrameRate');
+    if (frLoc) {
+      const dt = this.lastFrameTime > 0 ? time - this.lastFrameTime : 1 / 30;
+      gl.uniform1f(frLoc, dt > 0 ? 1 / dt : 30);
+    }
+
+    // iSampleRate
+    const srLoc = this.uniforms.get('iSampleRate');
+    if (srLoc) gl.uniform1f(srLoc, 44100.0);
+
+    // iChannelTime - all channels get the same time
+    const ctLoc = this.uniforms.get('iChannelTime[0]');
+    if (ctLoc) {
+      gl.uniform1f(ctLoc, time);
+      const ct1 = this.uniforms.get('iChannelTime[1]');
+      if (ct1) gl.uniform1f(ct1, time);
+      const ct2 = this.uniforms.get('iChannelTime[2]');
+      if (ct2) gl.uniform1f(ct2, time);
+      const ct3 = this.uniforms.get('iChannelTime[3]');
+      if (ct3) gl.uniform1f(ct3, time);
+    }
+
+    // iChannelResolution - 256x256 noise textures
+    const crLoc = this.uniforms.get('iChannelResolution[0]');
+    if (crLoc) {
+      gl.uniform3f(crLoc, 256, 256, 1);
+      const cr1 = this.uniforms.get('iChannelResolution[1]');
+      if (cr1) gl.uniform3f(cr1, 256, 256, 1);
+      const cr2 = this.uniforms.get('iChannelResolution[2]');
+      if (cr2) gl.uniform3f(cr2, 256, 256, 1);
+      const cr3 = this.uniforms.get('iChannelResolution[3]');
+      if (cr3) gl.uniform3f(cr3, 256, 256, 1);
+    }
+
+    // Bind noise textures to iChannel0-3
+    for (let i = 0; i < 4; i++) {
+      const channelLoc = this.uniforms.get(`iChannel${i}`);
+      if (channelLoc && this.noiseTextures[i]) {
+        gl.activeTexture(gl.TEXTURE0 + i);
+        gl.bindTexture(gl.TEXTURE_2D, this.noiseTextures[i]);
+        gl.uniform1i(channelLoc, i);
+      }
+    }
+
+    // Custom uniforms from sliders
     for (const [name, value] of Object.entries(uniformValues)) {
       const loc = this.uniforms.get(name);
       if (!loc) continue;
@@ -121,11 +241,15 @@ export class ShaderRenderer {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.finish();
+    this.lastFrameTime = time;
+    this.frameCount++;
   }
 
   start(uniformValues: Record<string, number | number[] | string> = {}) {
     this.startTime = performance.now() / 1000;
     this.isRunning = true;
+    this.frameCount = 0;
+    this.lastFrameTime = 0;
 
     const render = () => {
       if (!this.isRunning) return;
@@ -181,8 +305,13 @@ export class ShaderRenderer {
 
   destroy() {
     this.stop();
-    if (this.program) this.gl.deleteProgram(this.program);
-    if (this.buffer) this.gl.deleteBuffer(this.buffer);
+    const gl = this.gl;
+    if (this.program) gl.deleteProgram(this.program);
+    if (this.buffer) gl.deleteBuffer(this.buffer);
+    for (const tex of this.noiseTextures) {
+      gl.deleteTexture(tex);
+    }
+    this.noiseTextures = [];
   }
 }
 

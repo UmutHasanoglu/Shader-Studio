@@ -65,6 +65,81 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
   fragColor = vec4(col, 1.0);
 }`,
   },
+  {
+    name: 'Noise Texture (iChannel)',
+    code: `// Uses iChannel0 noise texture
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = fragCoord / iResolution.xy;
+  float t = iTime;
+
+  // Sample noise texture at different scales
+  vec3 n1 = texture(iChannel0, uv * 1.0 + t * 0.05).rgb;
+  vec3 n2 = texture(iChannel0, uv * 2.0 - t * 0.03).rgb;
+  vec3 n3 = texture(iChannel0, uv * 4.0 + vec2(t * 0.02, -t * 0.04)).rgb;
+
+  float fbm = n1.r * 0.5 + n2.g * 0.3 + n3.b * 0.2;
+
+  vec3 col = 0.5 + 0.5 * cos(fbm * 6.0 + iTime * 0.5 + vec3(0, 2, 4));
+  fragColor = vec4(col, 1.0);
+}`,
+  },
+  {
+    name: 'Raymarched Terrain',
+    code: `float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p); vec2 f = fract(p);
+  f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+             mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+}
+
+float terrain(vec2 p) {
+  float h = 0.0; float a = 0.5; float f = 1.0;
+  for(int i=0;i<6;i++){h+=a*noise(p*f);f*=2.0;a*=0.5;}
+  return h;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = (fragCoord - 0.5*iResolution.xy) / iResolution.y;
+  float t = iTime * 0.3;
+
+  vec3 ro = vec3(t, 1.5, t*0.5);
+  vec3 rd = normalize(vec3(uv.x, uv.y-0.1, 1.0));
+
+  // Raymarch terrain
+  float dist = 0.0;
+  for(int i=0; i<80; i++) {
+    vec3 p = ro + rd * dist;
+    float h = terrain(p.xz * 0.3) * 2.0;
+    float d = p.y - h;
+    if(d < 0.01 || dist > 50.0) break;
+    dist += d * 0.5;
+  }
+
+  vec3 col;
+  if(dist < 50.0) {
+    vec3 p = ro + rd * dist;
+    float h = terrain(p.xz * 0.3);
+    vec2 e = vec2(0.01, 0.0);
+    vec3 n = normalize(vec3(
+      terrain((p.xz+e.xy)*0.3) - terrain((p.xz-e.xy)*0.3),
+      0.02,
+      terrain((p.xz+e.yx)*0.3) - terrain((p.xz-e.yx)*0.3)
+    ));
+    float sun = max(dot(n, normalize(vec3(0.8,0.4,0.2))), 0.0);
+    col = mix(vec3(0.2,0.4,0.1), vec3(0.5,0.4,0.3), smoothstep(0.5,0.8,h));
+    col *= 0.2 + 0.8 * sun;
+    col = mix(col, vec3(0.5,0.6,0.7), 1.0-exp(-dist*0.04));
+  } else {
+    col = vec3(0.5,0.6,0.7) - rd.y*0.3;
+  }
+  col = pow(col, vec3(0.45));
+  fragColor = vec4(col,1.0);
+}`,
+  },
 ];
 
 export function ShadertoyPanel() {
@@ -130,9 +205,13 @@ export function ShadertoyPanel() {
         Paste shader code from{' '}
         <span className="text-indigo-400">shadertoy.com</span>. The converter handles{' '}
         <code className="text-indigo-400">mainImage()</code> format automatically.
-        Supports <code className="text-indigo-400">iTime</code>,{' '}
+        Supports all Shadertoy uniforms:{' '}
+        <code className="text-indigo-400">iTime</code>,{' '}
         <code className="text-indigo-400">iResolution</code>,{' '}
-        <code className="text-indigo-400">iFrame</code>.
+        <code className="text-indigo-400">iFrame</code>,{' '}
+        <code className="text-indigo-400">iMouse</code>,{' '}
+        <code className="text-indigo-400">iDate</code>,{' '}
+        <code className="text-indigo-400">iChannel0-3</code> (noise textures).
       </p>
 
       {/* Example shaders */}
