@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useStudioStore } from '@/store/store';
 import { ShaderRenderer } from '@/lib/renderer';
 
@@ -8,6 +8,7 @@ export function PreviewCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ShaderRenderer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [shaderError, setShaderError] = useState<string | null>(null);
 
   const {
     activeTemplate,
@@ -49,7 +50,11 @@ export function PreviewCanvas() {
     if (shaderCode) {
       const success = renderer.compileShader(shaderCode, activeTemplate?.vertexShader);
       if (!success) {
-        console.error('Failed to compile shader');
+        const err = renderer.getLastError();
+        console.error('Failed to compile shader:', err);
+        setShaderError(err || 'Unknown compilation error');
+      } else {
+        setShaderError(null);
       }
     }
   }, [activeTemplate, customShaderCode, activeTab]);
@@ -132,6 +137,30 @@ export function PreviewCanvas() {
           className="rounded-lg shadow-2xl"
           style={{ maxWidth: '100%', maxHeight: '100%' }}
         />
+      )}
+      {shaderError && (
+        <div className="absolute bottom-0 left-0 right-0 bg-red-900/90 border-t border-red-500/50 p-3 max-h-32 overflow-y-auto">
+          <div className="flex items-start gap-2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400 flex-shrink-0 mt-0.5">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <div>
+              <p className="text-red-300 text-xs font-semibold mb-1">Shader Compilation Error</p>
+              <pre className="text-red-200/80 text-[10px] leading-relaxed whitespace-pre-wrap font-mono">{shaderError}</pre>
+            </div>
+            <button
+              onClick={() => setShaderError(null)}
+              className="text-red-400 hover:text-red-200 flex-shrink-0"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
       )}
       {!activeTemplate && activeTab !== 'svg' && !customShaderCode && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

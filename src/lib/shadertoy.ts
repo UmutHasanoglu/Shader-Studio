@@ -70,9 +70,12 @@ export function convertShadertoyShader(code: string): string {
   const result = `precision highp float;
 precision highp int;
 
+// GLSL ES 1.0 compatibility for Shadertoy's ES 3.0 texture functions
+#define texture texture2D
+
 // Shadertoy built-in uniforms
 uniform float iTime;
-uniform vec2 iResolution;
+uniform vec3 iResolution;
 uniform int iFrame;
 uniform vec4 iMouse;
 uniform vec4 iDate;
@@ -111,7 +114,7 @@ function ensureBuiltinUniforms(code: string): string {
   };
 
   checkAndAdd('iTime', 'float');
-  checkAndAdd('iResolution', 'vec2');
+  checkAndAdd('iResolution', 'vec3');
   checkAndAdd('iFrame', 'int');
   checkAndAdd('iMouse', 'vec4');
   checkAndAdd('iDate', 'vec4');

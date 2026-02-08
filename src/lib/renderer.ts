@@ -32,6 +32,8 @@ export class ShaderRenderer {
   private startTime: number = 0;
   private animationId: number = 0;
   private uniforms: Map<string, WebGLUniformLocation> = new Map();
+  private uniformTypes: Map<string, number> = new Map();
+  private _lastError: string = '';
   private isRunning = false;
   private frameCallback: ((time: number) => void) | null = null;
   private noiseTextures: WebGLTexture[] = [];
@@ -81,13 +83,15 @@ export class ShaderRenderer {
 
   compileShader(fragmentSource: string, vertexSource?: string): boolean {
     const gl = this.gl;
+    this._lastError = '';
     const vs = vertexSource || DEFAULT_VERTEX_SHADER;
 
     const vertexShader = gl.createShader(gl.VERTEX_SHADER)!;
     gl.shaderSource(vertexShader, vs);
     gl.compileShader(vertexShader);
     if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
-      console.error('Vertex shader error:', gl.getShaderInfoLog(vertexShader));
+      this._lastError = 'Vertex shader: ' + (gl.getShaderInfoLog(vertexShader) || 'Unknown error');
+      console.error(this._lastError);
       gl.deleteShader(vertexShader);
       return false;
     }
@@ -96,7 +100,8 @@ export class ShaderRenderer {
     gl.shaderSource(fragmentShader, fragmentSource);
     gl.compileShader(fragmentShader);
     if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
-      console.error('Fragment shader error:', gl.getShaderInfoLog(fragmentShader));
+      this._lastError = 'Fragment shader: ' + (gl.getShaderInfoLog(fragmentShader) || 'Unknown error');
+      console.error(this._lastError);
       gl.deleteShader(vertexShader);
       gl.deleteShader(fragmentShader);
       return false;
@@ -110,7 +115,8 @@ export class ShaderRenderer {
     gl.linkProgram(this.program);
 
     if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
-      console.error('Program link error:', gl.getProgramInfoLog(this.program));
+      this._lastError = 'Link: ' + (gl.getProgramInfoLog(this.program) || 'Unknown error');
+      console.error(this._lastError);
       gl.deleteShader(vertexShader);
       gl.deleteShader(fragmentShader);
       return false;
@@ -120,16 +126,24 @@ export class ShaderRenderer {
     gl.deleteShader(fragmentShader);
 
     this.uniforms.clear();
+    this.uniformTypes.clear();
     const numUniforms = gl.getProgramParameter(this.program, gl.ACTIVE_UNIFORMS);
     for (let i = 0; i < numUniforms; i++) {
       const info = gl.getActiveUniform(this.program, i);
       if (info) {
         const loc = gl.getUniformLocation(this.program, info.name);
-        if (loc) this.uniforms.set(info.name, loc);
+        if (loc) {
+          this.uniforms.set(info.name, loc);
+          this.uniformTypes.set(info.name, info.type);
+        }
       }
     }
 
     return true;
+  }
+
+  getLastError(): string {
+    return this._lastError;
   }
 
   renderFrame(time: number, uniformValues: Record<string, number | number[] | string> = {}) {
@@ -147,7 +161,14 @@ export class ShaderRenderer {
     if (timeLoc) gl.uniform1f(timeLoc, time);
 
     const resLoc = this.uniforms.get('iResolution');
-    if (resLoc) gl.uniform2f(resLoc, this.canvas.width, this.canvas.height);
+    if (resLoc) {
+      const resType = this.uniformTypes.get('iResolution');
+      if (resType === gl.FLOAT_VEC3) {
+        gl.uniform3f(resLoc, this.canvas.width, this.canvas.height, 1.0);
+      } else {
+        gl.uniform2f(resLoc, this.canvas.width, this.canvas.height);
+      }
+    }
 
     const frameLoc = this.uniforms.get('iFrame');
     if (frameLoc) gl.uniform1i(frameLoc, this.frameCount);
