@@ -11,6 +11,8 @@ export function SVGPanel() {
     addSVGAnimation,
     setActiveSVGAnimation,
     activeSVGAnimation,
+    setActiveTab,
+    setDuration: setStoreDuration,
   } = useStudioStore();
 
   const [svgContent, setSvgContent] = useState('');
@@ -62,7 +64,9 @@ export function SVGPanel() {
 
     addSVGAnimation(animation);
     setActiveSVGAnimation(animation);
-  }, [svgContent, selectedTemplate, animName, duration, bgColor, addSVGAnimation, setActiveSVGAnimation]);
+    setActiveTab('svg');
+    setStoreDuration(duration);
+  }, [svgContent, selectedTemplate, animName, duration, bgColor, addSVGAnimation, setActiveSVGAnimation, setActiveTab, setStoreDuration]);
 
   return (
     <div className="p-3">
@@ -206,7 +210,7 @@ export function SVGPanel() {
             {svgAnimations.map((anim) => (
               <button
                 key={anim.id}
-                onClick={() => setActiveSVGAnimation(anim)}
+                onClick={() => { setActiveSVGAnimation(anim); setStoreDuration(anim.duration); }}
                 className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors ${
                   activeSVGAnimation?.id === anim.id
                     ? 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-300'

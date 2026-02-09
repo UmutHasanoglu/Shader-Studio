@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useStudioStore } from '@/store/store';
 import { ShaderRenderer } from '@/lib/renderer';
+import { buildSVGTransform, buildSVGFilter } from '@/lib/svg-renderer';
 
 export function PreviewCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -176,15 +177,85 @@ export function PreviewCanvas() {
   );
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function applyEasing(t: number, easing: string): number {
+  switch (easing) {
+    case 'ease-in': return t * t;
+    case 'ease-out': return t * (2 - t);
+    case 'ease-in-out': return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    case 'linear': return t;
+    default: return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+  }
+}
+
 function SVGPreview() {
-  const { activeSVGAnimation, isPlaying, currentTime, duration } = useStudioStore();
+  const { activeSVGAnimation, isPlaying, currentTime, duration, setCurrentTime } = useStudioStore();
   const containerRef = useRef<HTMLDivElement>(null);
+  const animRef = useRef<number>(0);
+  const startRef = useRef<{ wall: number; offset: number }>({ wall: 0, offset: 0 });
+
+  // Animate when playing
+  useEffect(() => {
+    if (!activeSVGAnimation || !isPlaying) return;
+
+    startRef.current = { wall: performance.now() / 1000, offset: currentTime };
+
+    const tick = () => {
+      const now = performance.now() / 1000;
+      const t = startRef.current.offset + (now - startRef.current.wall);
+      setCurrentTime(t);
+      animRef.current = requestAnimationFrame(tick);
+    };
+    animRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animRef.current);
+  }, [activeSVGAnimation, isPlaying, setCurrentTime]);
+
+  // Interpolate keyframes at current time
+  const props = useMemo(() => {
+    if (!activeSVGAnimation) return {};
+    const dur = activeSVGAnimation.duration || duration || 1;
+    const normalizedTime = dur > 0 ? (currentTime % dur) / dur : 0;
+    const kfs = activeSVGAnimation.keyframes;
+    if (!kfs || kfs.length === 0) return {};
+
+    if (kfs.length === 1) return kfs[0].properties as Record<string, number>;
+
+    let prevKf = kfs[0];
+    let nextKf = kfs[kfs.length - 1];
+    for (let i = 0; i < kfs.length - 1; i++) {
+      if (normalizedTime >= kfs[i].time && normalizedTime <= kfs[i + 1].time) {
+        prevKf = kfs[i];
+        nextKf = kfs[i + 1];
+        break;
+      }
+    }
+
+    const segLen = nextKf.time - prevKf.time;
+    const segT = segLen > 0 ? (normalizedTime - prevKf.time) / segLen : 0;
+    const easedT = applyEasing(segT, activeSVGAnimation.easing);
+
+    const result: Record<string, number> = {};
+    const allKeys = new Set([
+      ...Object.keys(prevKf.properties),
+      ...Object.keys(nextKf.properties),
+    ]);
+    for (const key of allKeys) {
+      const a = (prevKf.properties[key] as number) ?? 0;
+      const b = (nextKf.properties[key] as number) ?? a;
+      result[key] = lerp(a, b, easedT);
+    }
+    return result;
+  }, [activeSVGAnimation, currentTime, duration]);
 
   if (!activeSVGAnimation) return null;
 
-  const normalizedTime = duration > 0 ? (currentTime % duration) / duration : 0;
+  const transform = buildSVGTransform(props as Record<string, number>);
+  const filter = buildSVGFilter(props as Record<string, number>);
+  const opacity = (props as Record<string, number>).opacity ?? 1;
 
-  // Simple CSS-based preview (the actual export uses canvas rendering)
   return (
     <div
       ref={containerRef}
@@ -192,15 +263,30 @@ function SVGPreview() {
       style={{ backgroundColor: activeSVGAnimation.backgroundColor || '#000' }}
     >
       <div
-        dangerouslySetInnerHTML={{ __html: activeSVGAnimation.svgContent }}
         style={{
           width: '50%',
           height: '50%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          transform,
+          filter: filter || undefined,
+          opacity,
+          transition: 'none',
+          transformOrigin: 'center center',
         }}
-      />
+      >
+        <div
+          dangerouslySetInnerHTML={{ __html: activeSVGAnimation.svgContent }}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        />
+      </div>
     </div>
   );
 }
