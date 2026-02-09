@@ -145,26 +145,27 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
 export function ShadertoyPanel() {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [templateName, setTemplateName] = useState('');
+  const [showSave, setShowSave] = useState(false);
+  const [lastImported, setLastImported] = useState<AnimationTemplate | null>(null);
   const {
     setCustomShaderCode,
     setActiveTemplate,
     resetUniformOverrides,
+    savedTemplates,
+    saveTemplate,
+    removeSavedTemplate,
   } = useStudioStore();
 
-  const handleImport = useCallback(() => {
-    if (!code.trim()) {
-      setError('Paste a Shadertoy shader to import');
-      return;
-    }
-
-    const validation = validateGLSL(code);
+  const doImport = useCallback((shaderCode: string): AnimationTemplate | null => {
+    const validation = validateGLSL(shaderCode);
     if (!validation.valid) {
       setError(validation.error || 'Invalid shader code');
-      return;
+      return null;
     }
 
     setError(null);
-    const converted = convertShadertoyShader(code);
+    const converted = convertShadertoyShader(shaderCode);
     setCustomShaderCode(converted);
 
     const extractedUniforms = extractCustomUniforms(converted);
@@ -191,7 +192,41 @@ export function ShadertoyPanel() {
 
     resetUniformOverrides();
     setActiveTemplate(template);
-  }, [code, setCustomShaderCode, setActiveTemplate, resetUniformOverrides]);
+    return template;
+  }, [setCustomShaderCode, setActiveTemplate, resetUniformOverrides]);
+
+  const handleImport = useCallback(() => {
+    if (!code.trim()) {
+      setError('Paste a Shadertoy shader to import');
+      return;
+    }
+    const template = doImport(code);
+    if (template) {
+      setLastImported(template);
+      setShowSave(false);
+    }
+  }, [code, doImport]);
+
+  const handleSaveAsTemplate = useCallback(() => {
+    if (!lastImported) return;
+    const name = templateName.trim() || 'Custom Shader';
+    const saved: AnimationTemplate = {
+      ...lastImported,
+      id: 'saved-' + Date.now(),
+      name,
+      description: 'Saved custom template',
+    };
+    saveTemplate(saved);
+    setShowSave(false);
+    setTemplateName('');
+  }, [lastImported, templateName, saveTemplate]);
+
+  const handleLoadSaved = (template: AnimationTemplate) => {
+    setCustomShaderCode(template.fragmentShader);
+    resetUniformOverrides();
+    setActiveTemplate(template);
+    setLastImported(template);
+  };
 
   const handleLoadExample = (exampleCode: string) => {
     setCode(exampleCode);
@@ -214,6 +249,35 @@ export function ShadertoyPanel() {
         <code className="text-indigo-400">iChannel0-3</code> (noise textures).
       </p>
 
+      {/* Saved templates */}
+      {savedTemplates.length > 0 && (
+        <div className="mb-3">
+          <p className="text-xs text-studio-text-dim mb-1.5">Saved templates:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {savedTemplates.map((t) => (
+              <div key={t.id} className="flex items-center gap-0.5">
+                <button
+                  onClick={() => handleLoadSaved(t)}
+                  className="px-2 py-1 text-xs rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors border border-indigo-500/20"
+                >
+                  {t.name}
+                </button>
+                <button
+                  onClick={() => removeSavedTemplate(t.id)}
+                  className="p-0.5 text-studio-text-dim hover:text-red-400 transition-colors"
+                  title="Remove"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Example shaders */}
       <div className="mb-3">
         <p className="text-xs text-studio-text-dim mb-1.5">Quick examples:</p>
@@ -231,7 +295,7 @@ export function ShadertoyPanel() {
       </div>
 
       <textarea
-        className="code-editor flex-1 min-h-[250px]"
+        className="code-editor flex-1 min-h-[200px]"
         value={code}
         onChange={(e) => setCode(e.target.value)}
         placeholder="// Paste your Shadertoy shader code here...
@@ -257,6 +321,51 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
       >
         Import & Preview
       </button>
+
+      {/* Save as Template */}
+      {lastImported && (
+        <div className="mt-2">
+          {showSave ? (
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder="Template name..."
+                className="flex-1 px-2 py-1.5 text-xs bg-studio-bg border border-studio-border rounded text-studio-text outline-none focus:border-indigo-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveAsTemplate();
+                }}
+                autoFocus
+              />
+              <button
+                onClick={handleSaveAsTemplate}
+                className="px-3 py-1.5 text-xs rounded bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30 transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setShowSave(false)}
+                className="px-2 py-1.5 text-xs rounded bg-studio-border text-studio-text-dim hover:text-studio-text transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowSave(true)}
+              className="w-full py-1.5 rounded-lg text-xs font-medium bg-studio-border hover:bg-studio-border/80 text-studio-text-dim hover:text-studio-text transition-colors flex items-center justify-center gap-1.5"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+              </svg>
+              Save as Template
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

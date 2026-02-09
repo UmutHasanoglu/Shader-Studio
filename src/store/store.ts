@@ -69,6 +69,9 @@ interface StudioState {
   exportQueue: ExportQueueItem[];
   isProcessingQueue: boolean;
 
+  // Saved custom templates
+  savedTemplates: AnimationTemplate[];
+
   // Actions
   setActiveComposition: (comp: Composition | null) => void;
   addComposition: (comp: Composition) => void;
@@ -100,6 +103,10 @@ interface StudioState {
   clearExportQueue: () => void;
   updateQueueItem: (id: string, updates: Partial<ExportQueueItem>) => void;
   setProcessingQueue: (processing: boolean) => void;
+
+  // Saved templates actions
+  saveTemplate: (template: AnimationTemplate) => void;
+  removeSavedTemplate: (id: string) => void;
 }
 
 export const useStudioStore = create<StudioState>()(
@@ -138,6 +145,7 @@ export const useStudioStore = create<StudioState>()(
       uniformOverrides: {},
       exportQueue: [],
       isProcessingQueue: false,
+      savedTemplates: [],
 
       setActiveComposition: (comp) => set({ activeComposition: comp }),
       addComposition: (comp) =>
@@ -190,6 +198,19 @@ export const useStudioStore = create<StudioState>()(
           ),
         })),
       setProcessingQueue: (processing) => set({ isProcessingQueue: processing }),
+
+      // Saved templates
+      saveTemplate: (template) =>
+        set((state) => ({
+          savedTemplates: [
+            ...state.savedTemplates.filter((t) => t.id !== template.id),
+            template,
+          ],
+        })),
+      removeSavedTemplate: (id) =>
+        set((state) => ({
+          savedTemplates: state.savedTemplates.filter((t) => t.id !== id),
+        })),
     }),
     {
       name: 'shader-studio-settings',
@@ -202,6 +223,7 @@ export const useStudioStore = create<StudioState>()(
         exportSettings: state.exportSettings,
         duration: state.duration,
         fps: state.fps,
+        savedTemplates: state.savedTemplates,
       }),
     },
   ),

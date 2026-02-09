@@ -1205,6 +1205,774 @@ export const SHADER_TEMPLATES: AnimationTemplate[] = [
       }
     `,
   },
+  {
+    id: 'electric-storm',
+    name: 'Electric Storm',
+    category: 'abstract',
+    description: 'Looping electric lightning bolts with pulsing energy - seamless loop at 6.28s',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 1.0, min: 0.1, max: 3.0, step: 0.1, label: 'Speed' },
+      { name: 'u_branches', type: 'float', value: 5.0, min: 2.0, max: 12.0, step: 1.0, label: 'Branches' },
+      { name: 'u_glow', type: 'float', value: 1.5, min: 0.5, max: 4.0, step: 0.1, label: 'Glow' },
+      { name: 'u_hue', type: 'float', value: 0.65, min: 0.0, max: 1.0, step: 0.01, label: 'Hue' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_branches;
+      uniform float u_glow;
+      uniform float u_hue;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1,0)), f.x),
+                   mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x), f.y);
+      }
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+        float t = iTime * u_speed;
+        vec3 col = vec3(0.02, 0.01, 0.04);
+
+        for (float i = 0.0; i < 12.0; i++) {
+          if (i >= u_branches) break;
+          float angle = i / u_branches * 6.2832 + t * 0.5;
+          vec2 dir = vec2(cos(angle), sin(angle));
+          float d = dot(uv, dir);
+          float lateral = length(uv - dir * d);
+
+          float bolt = noise(vec2(d * 10.0 + t * 3.0, i * 7.0));
+          bolt = abs(bolt - 0.5) * 2.0;
+          float width = 0.003 + bolt * 0.01;
+          float intensity = width * u_glow / (lateral + width);
+
+          float pulse = 0.5 + 0.5 * sin(t * 4.0 + i * 1.3);
+          intensity *= pulse;
+
+          vec3 boltColor = hsv2rgb(vec3(u_hue + i * 0.02, 0.7, 1.0));
+          col += boltColor * intensity * 0.15;
+        }
+
+        float coreGlow = exp(-length(uv) * 3.0);
+        col += hsv2rgb(vec3(u_hue, 0.3, 1.0)) * coreGlow * 0.3;
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'liquid-chrome',
+    name: 'Liquid Chrome',
+    category: 'abstract',
+    description: 'Metallic liquid surface with smooth reflections - perfect for backgrounds',
+    duration: 15,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 0.4, min: 0.05, max: 2.0, step: 0.05, label: 'Flow Speed' },
+      { name: 'u_scale', type: 'float', value: 3.0, min: 1.0, max: 8.0, step: 0.5, label: 'Scale' },
+      { name: 'u_reflectivity', type: 'float', value: 2.0, min: 0.5, max: 4.0, step: 0.1, label: 'Reflectivity' },
+      { name: 'u_warmth', type: 'float', value: 0.3, min: 0.0, max: 1.0, step: 0.05, label: 'Warmth' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_scale;
+      uniform float u_reflectivity;
+      uniform float u_warmth;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                   mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+        for (int i = 0; i < 6; i++) {
+          v += a * noise(p);
+          p = rot * p * 2.0 + 100.0;
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float t = iTime * u_speed;
+        vec2 p = uv * u_scale;
+
+        float f1 = fbm(p + vec2(t * 0.3, t * 0.1));
+        float f2 = fbm(p + vec2(f1 * 1.5 + t * 0.1, f1 + t * 0.2));
+        float f3 = fbm(p + vec2(f2, f1) + t * 0.05);
+
+        // Chrome-like surface normals
+        float dx = fbm(p + vec2(0.01, 0.0) + vec2(f2, f1)) - f3;
+        float dy = fbm(p + vec2(0.0, 0.01) + vec2(f2, f1)) - f3;
+        vec3 normal = normalize(vec3(dx * 20.0, dy * 20.0, 1.0));
+
+        // Environment reflection
+        vec3 viewDir = vec3(0.0, 0.0, 1.0);
+        vec3 reflected = reflect(viewDir, normal);
+
+        // Chrome color from reflection
+        float fresnel = pow(1.0 - abs(dot(viewDir, normal)), u_reflectivity);
+        vec3 chrome = mix(vec3(0.15, 0.15, 0.18), vec3(0.9, 0.92, 0.95), fresnel);
+
+        // Warm tint
+        chrome = mix(chrome, chrome * vec3(1.1, 0.95, 0.85), u_warmth);
+
+        // Specular highlights
+        float spec = pow(max(reflected.z, 0.0), 16.0);
+        chrome += vec3(1.0) * spec * 0.5;
+
+        // Subtle color based on surface deformation
+        chrome += vec3(0.05, 0.08, 0.15) * f3 * 2.0;
+
+        gl_FragColor = vec4(clamp(chrome, 0.0, 1.0), 1.0);
+      }
+    `,
+  },
+  {
+    id: 'fire-flames',
+    name: 'Fire & Flames',
+    category: 'noise',
+    description: 'Realistic animated fire with configurable color and intensity',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 1.5, min: 0.3, max: 4.0, step: 0.1, label: 'Speed' },
+      { name: 'u_intensity', type: 'float', value: 1.5, min: 0.5, max: 4.0, step: 0.1, label: 'Intensity' },
+      { name: 'u_height', type: 'float', value: 0.5, min: 0.1, max: 1.0, step: 0.05, label: 'Flame Height' },
+      { name: 'u_turbulence', type: 'float', value: 3.0, min: 1.0, max: 6.0, step: 0.5, label: 'Turbulence' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_intensity;
+      uniform float u_height;
+      uniform float u_turbulence;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                   mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 5; i++) {
+          v += a * noise(p);
+          p = p * 2.0 + 100.0;
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float t = iTime * u_speed;
+
+        // Fire base coordinates
+        vec2 p = vec2(uv.x * u_turbulence, uv.y * 2.0 - t);
+
+        float fire = fbm(p);
+        fire += fbm(p * 2.0 + vec2(t * 0.5, 0.0)) * 0.5;
+
+        // Shape: stronger at bottom, fading at top
+        float shape = pow(1.0 - uv.y, 1.5) * u_height * 3.0;
+        shape *= smoothstep(0.0, 0.2, uv.x) * smoothstep(1.0, 0.8, uv.x);
+        fire = fire * shape;
+
+        // Fire color gradient: white -> yellow -> orange -> red -> dark
+        vec3 col = vec3(0.0);
+        col = mix(col, vec3(0.5, 0.0, 0.0), smoothstep(0.1, 0.3, fire));
+        col = mix(col, vec3(1.0, 0.3, 0.0), smoothstep(0.3, 0.5, fire));
+        col = mix(col, vec3(1.0, 0.7, 0.0), smoothstep(0.5, 0.7, fire));
+        col = mix(col, vec3(1.0, 1.0, 0.7), smoothstep(0.7, 0.9, fire));
+        col *= u_intensity;
+
+        // Embers
+        float ember = noise(vec2(uv.x * 20.0, uv.y * 10.0 - t * 2.0));
+        ember = smoothstep(0.92, 1.0, ember) * shape * 0.5;
+        col += vec3(1.0, 0.5, 0.1) * ember;
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'kaleidoscope',
+    name: 'Kaleidoscope',
+    category: 'geometry',
+    description: 'Colorful kaleidoscope with configurable symmetry and rotation',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 0.5, min: 0.1, max: 2.0, step: 0.05, label: 'Speed' },
+      { name: 'u_segments', type: 'float', value: 6.0, min: 3.0, max: 16.0, step: 1.0, label: 'Segments' },
+      { name: 'u_zoom', type: 'float', value: 3.0, min: 1.0, max: 8.0, step: 0.5, label: 'Zoom' },
+      { name: 'u_color_speed', type: 'float', value: 0.5, min: 0.0, max: 2.0, step: 0.1, label: 'Color Speed' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_segments;
+      uniform float u_zoom;
+      uniform float u_color_speed;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                   mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 5; i++) {
+          v += a * noise(p);
+          p *= 2.0;
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+        float t = iTime * u_speed;
+
+        float r = length(uv);
+        float a = atan(uv.y, uv.x);
+
+        // Kaleidoscope fold
+        float segAngle = 6.2832 / u_segments;
+        a = mod(a, segAngle);
+        a = abs(a - segAngle * 0.5);
+
+        // Reconstruct UV from folded polar
+        vec2 kUV = vec2(cos(a), sin(a)) * r * u_zoom;
+
+        // Animated pattern
+        float f1 = fbm(kUV + vec2(t * 0.3, t * 0.2));
+        float f2 = fbm(kUV * 2.0 + vec2(f1, t * 0.1));
+        float f3 = fbm(kUV + vec2(f2 * 1.5, f1 * 1.5));
+
+        vec3 col = vec3(0.0);
+        col += 0.5 + 0.5 * cos(f3 * 6.0 + t * u_color_speed + vec3(0, 2, 4));
+        col *= 0.5 + 0.5 * cos(f2 * 4.0 + t * u_color_speed * 0.7 + vec3(1, 3, 5));
+
+        // Circular vignette
+        col *= smoothstep(1.2, 0.3, r);
+
+        // Edge highlights
+        float edge = abs(fract(f3 * 3.0) - 0.5) * 2.0;
+        col += vec3(1.0) * pow(edge, 8.0) * 0.3;
+
+        gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      }
+    `,
+  },
+  {
+    id: 'sine-interference',
+    name: 'Wave Interference',
+    category: 'waves',
+    description: 'Hypnotic sine wave interference pattern - perfectly loopable',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 1.0, min: 0.1, max: 3.0, step: 0.1, label: 'Speed' },
+      { name: 'u_sources', type: 'float', value: 4.0, min: 2.0, max: 8.0, step: 1.0, label: 'Wave Sources' },
+      { name: 'u_frequency', type: 'float', value: 15.0, min: 5.0, max: 40.0, step: 1.0, label: 'Frequency' },
+      { name: 'u_hue_offset', type: 'float', value: 0.6, min: 0.0, max: 1.0, step: 0.01, label: 'Color Offset' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_sources;
+      uniform float u_frequency;
+      uniform float u_hue_offset;
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+        float t = iTime * u_speed;
+        float wave = 0.0;
+
+        for (float i = 0.0; i < 8.0; i++) {
+          if (i >= u_sources) break;
+          float angle = i / u_sources * 6.2832 + t * 0.3;
+          vec2 center = vec2(cos(angle), sin(angle)) * 0.4;
+          float d = length(uv - center);
+          wave += sin(d * u_frequency - t * 3.0 + i * 1.5) * 0.5;
+        }
+
+        wave /= u_sources;
+        float v = wave * 0.5 + 0.5;
+
+        vec3 col = hsv2rgb(vec3(
+          fract(v * 0.5 + u_hue_offset + t * 0.05),
+          0.7 - v * 0.3,
+          0.3 + v * 0.7
+        ));
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'digital-rain',
+    name: 'Digital Rain',
+    category: 'particles',
+    description: 'Matrix-inspired digital rain with falling characters',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 1.0, min: 0.2, max: 3.0, step: 0.1, label: 'Speed' },
+      { name: 'u_columns', type: 'float', value: 40.0, min: 10.0, max: 80.0, step: 2.0, label: 'Columns' },
+      { name: 'u_brightness', type: 'float', value: 1.5, min: 0.5, max: 3.0, step: 0.1, label: 'Brightness' },
+      { name: 'u_hue', type: 'float', value: 0.33, min: 0.0, max: 1.0, step: 0.01, label: 'Hue' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_columns;
+      uniform float u_brightness;
+      uniform float u_hue;
+
+      float hash(float n) { return fract(sin(n) * 43758.5453); }
+      float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0,2.0/3.0,1.0/3.0,3.0);
+        vec3 p = abs(fract(c.xxx+K.xyz)*6.0-K.www);
+        return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);
+      }
+
+      float glyph(vec2 p, float id) {
+        // Pseudo-glyph: grid of dots that change based on id
+        vec2 g = fract(p * vec2(3.0, 5.0));
+        float on = step(0.5, hash2(floor(p * vec2(3.0, 5.0)) + id));
+        return on * smoothstep(0.4, 0.2, length(g - 0.5));
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float t = iTime * u_speed;
+
+        float col_width = 1.0 / u_columns;
+        float colIdx = floor(uv.x / col_width);
+        float colFrac = fract(uv.x / col_width);
+
+        float colSpeed = 0.5 + hash(colIdx) * 1.5;
+        float colOffset = hash(colIdx * 7.0) * 20.0;
+
+        float row = uv.y * u_columns * 0.6;
+        float fallPos = t * colSpeed + colOffset;
+
+        float rowIdx = floor(row + fallPos);
+        float rowFrac = fract(row + fallPos);
+
+        // Character brightness (head is bright, fades behind)
+        float headDist = fract(fallPos) - (1.0 - uv.y);
+        float trail = exp(-max(headDist, 0.0) * 3.0);
+        trail *= smoothstep(0.0, 0.3, uv.y + fract(fallPos) - 0.3);
+
+        // Glyph
+        float charId = hash(colIdx * 100.0 + rowIdx);
+        // Flicker: some characters change
+        float flicker = step(0.97, hash(colIdx * 50.0 + rowIdx + floor(t * 8.0)));
+        charId += flicker * 0.5;
+
+        vec2 charUV = vec2(colFrac, rowFrac);
+        float g = glyph(charUV, charId);
+
+        float brightness = trail * g * u_brightness;
+
+        // Head glow
+        float isHead = smoothstep(0.02, 0.0, abs(headDist));
+        brightness += isHead * g * 2.0;
+
+        vec3 color = hsv2rgb(vec3(u_hue, 0.8, 1.0));
+        vec3 headColor = vec3(0.8, 1.0, 0.8); // White-ish head
+        vec3 finalCol = mix(color, headColor, isHead * 0.5) * brightness;
+
+        gl_FragColor = vec4(finalCol, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'nebula-space',
+    name: 'Space Nebula',
+    category: 'abstract',
+    description: 'Deep space nebula with twinkling stars and colorful gas clouds',
+    duration: 15,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 0.2, min: 0.05, max: 1.0, step: 0.05, label: 'Drift Speed' },
+      { name: 'u_color1_hue', type: 'float', value: 0.75, min: 0.0, max: 1.0, step: 0.01, label: 'Color 1 Hue' },
+      { name: 'u_color2_hue', type: 'float', value: 0.0, min: 0.0, max: 1.0, step: 0.01, label: 'Color 2 Hue' },
+      { name: 'u_density', type: 'float', value: 1.0, min: 0.3, max: 3.0, step: 0.1, label: 'Gas Density' },
+      { name: 'u_star_density', type: 'float', value: 1.0, min: 0.0, max: 3.0, step: 0.1, label: 'Star Density' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_color1_hue;
+      uniform float u_color2_hue;
+      uniform float u_density;
+      uniform float u_star_density;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+                   mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+      }
+
+      float fbm(vec2 p) {
+        float v = 0.0, a = 0.5;
+        mat2 rot = mat2(0.8,0.6,-0.6,0.8);
+        for (int i = 0; i < 6; i++) {
+          v += a*noise(p);
+          p = rot*p*2.0+100.0;
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0,2.0/3.0,1.0/3.0,3.0);
+        vec3 p = abs(fract(c.xxx+K.xyz)*6.0-K.www);
+        return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float t = iTime * u_speed;
+
+        // Nebula gas
+        float n1 = fbm(uv * 3.0 * u_density + vec2(t * 0.3, t * 0.1));
+        float n2 = fbm(uv * 4.0 * u_density + vec2(n1, t * 0.2));
+        float n3 = fbm(uv * 5.0 * u_density + vec2(n2 * 2.0, n1));
+
+        vec3 col1 = hsv2rgb(vec3(u_color1_hue, 0.7, 0.5));
+        vec3 col2 = hsv2rgb(vec3(u_color2_hue, 0.8, 0.4));
+
+        vec3 nebula = mix(col1, col2, n2) * n3 * 1.5;
+        nebula += vec3(0.1, 0.05, 0.15) * (1.0 - n1);
+
+        // Stars
+        float stars = 0.0;
+        for (float i = 0.0; i < 3.0; i++) {
+          vec2 starUV = uv * (200.0 + i * 100.0);
+          float s = hash(floor(starUV));
+          float twinkle = sin(t * (3.0 + s * 5.0) + s * 100.0) * 0.5 + 0.5;
+          s = smoothstep(0.98 - u_star_density * 0.02, 1.0, s);
+          float glow = 0.01 / (length(fract(starUV) - 0.5) + 0.01);
+          stars += s * glow * 0.02 * (0.5 + twinkle * 0.5);
+        }
+
+        vec3 col = nebula + vec3(0.9, 0.95, 1.0) * stars;
+        col = clamp(col, 0.0, 1.0);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'sacred-geometry',
+    name: 'Sacred Geometry',
+    category: 'geometry',
+    description: 'Animated sacred geometry patterns with flower of life motif',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 0.5, min: 0.1, max: 2.0, step: 0.05, label: 'Speed' },
+      { name: 'u_rings', type: 'float', value: 3.0, min: 1.0, max: 6.0, step: 1.0, label: 'Ring Layers' },
+      { name: 'u_line_width', type: 'float', value: 0.01, min: 0.003, max: 0.03, step: 0.001, label: 'Line Width' },
+      { name: 'u_glow', type: 'float', value: 2.0, min: 0.5, max: 5.0, step: 0.1, label: 'Glow' },
+      { name: 'u_hue', type: 'float', value: 0.55, min: 0.0, max: 1.0, step: 0.01, label: 'Hue' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_rings;
+      uniform float u_line_width;
+      uniform float u_glow;
+      uniform float u_hue;
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0,2.0/3.0,1.0/3.0,3.0);
+        vec3 p = abs(fract(c.xxx+K.xyz)*6.0-K.www);
+        return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);
+      }
+
+      float circle(vec2 p, vec2 center, float radius) {
+        return abs(length(p - center) - radius);
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+        float t = iTime * u_speed;
+        vec3 col = vec3(0.02, 0.02, 0.04);
+        float totalGlow = 0.0;
+
+        float baseR = 0.2;
+
+        for (float ring = 0.0; ring < 6.0; ring++) {
+          if (ring >= u_rings) break;
+          float ringR = baseR * (ring + 1.0);
+          int numCircles = int(6.0 * (ring + 1.0));
+
+          for (int i = 0; i < 36; i++) {
+            if (i >= numCircles) break;
+            float angle = float(i) / float(numCircles) * 6.2832 + t * (0.3 - ring * 0.05);
+            vec2 center = vec2(cos(angle), sin(angle)) * ringR;
+
+            float d = circle(uv, center, baseR);
+            float pulse = 0.5 + 0.5 * sin(t * 2.0 + ring + float(i) * 0.3);
+            float line = u_line_width / (d + u_line_width);
+            line *= pulse * 0.5 + 0.5;
+
+            float hue = fract(u_hue + ring * 0.08 + float(i) * 0.02);
+            col += hsv2rgb(vec3(hue, 0.7, 1.0)) * line * 0.1 * u_glow;
+          }
+        }
+
+        // Center circle
+        float centerD = circle(uv, vec2(0.0), baseR);
+        float centerLine = u_line_width / (centerD + u_line_width);
+        col += hsv2rgb(vec3(u_hue, 0.5, 1.0)) * centerLine * 0.2 * u_glow;
+
+        // Outer boundary
+        float outerD = circle(uv, vec2(0.0), baseR * (u_rings + 1.0));
+        float outerLine = u_line_width * 0.5 / (outerD + u_line_width * 0.5);
+        col += hsv2rgb(vec3(u_hue + 0.3, 0.6, 0.8)) * outerLine * 0.15 * u_glow;
+
+        col = clamp(col, 0.0, 1.0);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  },
+  {
+    id: 'ripple-pond',
+    name: 'Ripple Pond',
+    category: 'waves',
+    description: 'Concentric ripples on water surface with light refraction',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 1.0, min: 0.2, max: 3.0, step: 0.1, label: 'Speed' },
+      { name: 'u_ripples', type: 'float', value: 3.0, min: 1.0, max: 6.0, step: 1.0, label: 'Ripple Sources' },
+      { name: 'u_frequency', type: 'float', value: 20.0, min: 5.0, max: 50.0, step: 1.0, label: 'Frequency' },
+      { name: 'u_amplitude', type: 'float', value: 0.02, min: 0.005, max: 0.05, step: 0.005, label: 'Amplitude' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_ripples;
+      uniform float u_frequency;
+      uniform float u_amplitude;
+
+      float hash(float n) { return fract(sin(n) * 43758.5453); }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float t = iTime * u_speed;
+        float aspect = iResolution.x / iResolution.y;
+
+        // Base water color
+        vec3 waterDeep = vec3(0.0, 0.1, 0.2);
+        vec3 waterShallow = vec3(0.1, 0.3, 0.4);
+
+        // Calculate wave displacement
+        vec2 disp = vec2(0.0);
+        float height = 0.0;
+
+        for (float i = 0.0; i < 6.0; i++) {
+          if (i >= u_ripples) break;
+          float phase = hash(i * 13.7) * 6.28;
+          vec2 center = vec2(
+            0.3 + 0.4 * hash(i * 7.1),
+            0.3 + 0.4 * hash(i * 11.3)
+          );
+          center.x *= aspect;
+          vec2 uvA = vec2(uv.x * aspect, uv.y);
+
+          float d = length(uvA - center);
+          float wave = sin(d * u_frequency - t * 4.0 + phase);
+          float decay = exp(-d * 3.0);
+
+          height += wave * decay;
+          vec2 dir = normalize(uvA - center + 0.001);
+          disp += dir * wave * decay * u_amplitude;
+        }
+
+        height /= u_ripples;
+
+        // Refracted UV for fake caustics
+        vec2 refractedUV = uv + disp;
+
+        // Water color based on height
+        vec3 col = mix(waterDeep, waterShallow, height * 0.5 + 0.5);
+
+        // Specular highlights
+        float spec = pow(max(height, 0.0), 3.0);
+        col += vec3(0.8, 0.9, 1.0) * spec * 2.0;
+
+        // Caustics pattern
+        float caustic = sin(refractedUV.x * 50.0 + t) * sin(refractedUV.y * 50.0 + t * 0.7);
+        caustic = pow(max(caustic, 0.0), 2.0) * 0.15;
+        col += vec3(0.3, 0.5, 0.6) * caustic;
+
+        // Vignette
+        float vig = 1.0 - length(uv - 0.5) * 0.8;
+        col *= vig;
+
+        gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      }
+    `,
+  },
+  {
+    id: 'bokeh-lights',
+    name: 'Bokeh Lights',
+    category: 'particles',
+    description: 'Dreamy floating bokeh light orbs - great for overlays and backgrounds',
+    duration: 10,
+    fps: 30,
+    uniforms: [
+      { name: 'u_speed', type: 'float', value: 0.5, min: 0.1, max: 2.0, step: 0.05, label: 'Float Speed' },
+      { name: 'u_count', type: 'float', value: 30.0, min: 5.0, max: 60.0, step: 1.0, label: 'Light Count' },
+      { name: 'u_size', type: 'float', value: 0.08, min: 0.02, max: 0.2, step: 0.01, label: 'Orb Size' },
+      { name: 'u_softness', type: 'float', value: 3.0, min: 1.0, max: 8.0, step: 0.5, label: 'Softness' },
+      { name: 'u_hue_range', type: 'float', value: 0.3, min: 0.0, max: 1.0, step: 0.05, label: 'Color Range' },
+    ],
+    fragmentShader: `
+      precision highp float;
+      uniform float iTime;
+      uniform vec2 iResolution;
+      uniform float u_speed;
+      uniform float u_count;
+      uniform float u_size;
+      uniform float u_softness;
+      uniform float u_hue_range;
+
+      vec2 hash2(float n) {
+        return fract(sin(vec2(n, n+1.0)) * vec2(43758.5453, 22578.1459));
+      }
+
+      vec3 hsv2rgb(vec3 c) {
+        vec4 K = vec4(1.0,2.0/3.0,1.0/3.0,3.0);
+        vec3 p = abs(fract(c.xxx+K.xyz)*6.0-K.www);
+        return c.z*mix(K.xxx,clamp(p-K.xxx,0.0,1.0),c.y);
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / iResolution.xy;
+        float aspect = iResolution.x / iResolution.y;
+        vec2 uvA = vec2(uv.x * aspect, uv.y);
+        float t = iTime * u_speed;
+
+        vec3 col = vec3(0.01, 0.01, 0.02);
+
+        for (float i = 0.0; i < 60.0; i++) {
+          if (i >= u_count) break;
+          vec2 seed = hash2(i * 17.0);
+          float size = u_size * (0.3 + seed.x * 0.7);
+          float depth = 0.3 + seed.y * 0.7;
+
+          // Floating motion
+          vec2 pos;
+          pos.x = fract(seed.x + t * (0.05 + seed.y * 0.1) * 0.5);
+          pos.y = fract(seed.y + t * (0.03 + seed.x * 0.07));
+          pos.x += sin(t * 0.7 + i) * 0.03;
+          pos.y += cos(t * 0.5 + i * 1.3) * 0.02;
+          pos.x *= aspect;
+
+          float d = length(uvA - pos);
+
+          // Soft bokeh circle
+          float bokeh = smoothstep(size, size * (1.0 - 1.0/u_softness), d);
+          // Ring edge
+          float ring = smoothstep(size * 0.7, size * 0.8, d) *
+                       smoothstep(size, size * 0.95, d);
+          bokeh = max(bokeh, ring * 0.5);
+
+          bokeh *= depth;
+
+          float hue = fract(0.55 + seed.x * u_hue_range);
+          float sat = 0.3 + seed.y * 0.4;
+          vec3 orbCol = hsv2rgb(vec3(hue, sat, 1.0));
+
+          col += orbCol * bokeh * 0.15;
+        }
+
+        gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+      }
+    `,
+  },
 ];
 
 export const SHADERTOY_TEMPLATE = `
