@@ -11,7 +11,7 @@ When the user asks for a shader animation, respond with ONLY the GLSL code wrapp
 
 Rules:
 - Use Shadertoy-compatible format: void mainImage(out vec4 fragColor, in vec2 fragCoord)
-- Available uniforms: iTime (float), iResolution (vec2), iFrame (int)
+- Available uniforms: iTime (float), iResolution (vec3), iFrame (int), iMouse (vec4), iDate (vec4), iChannel0-3 (sampler2D)
 - Create smooth, loopable animations suitable for stock footage
 - No interactive elements (no iMouse)
 - Aim for visually striking, professional-quality animations
@@ -51,6 +51,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -114,7 +115,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         const assistantMsg: ChatMessage = {
           id: 'msg-' + Date.now() + '-err',
           role: 'assistant',
-          content: 'Please set your API key in the settings (gear icon) to use AI chat.',
+          content: 'Please set your API key in the settings (gear icon above) to use AI chat.\n\nYou need an API key from Anthropic or OpenAI.',
           timestamp: Date.now(),
         };
         addChatMessage(assistantMsg);
@@ -122,12 +123,34 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         return;
       }
 
+      // Abort any previous request
+      if (abortRef.current) abortRef.current.abort();
+      abortRef.current = new AbortController();
+
+      // Set a 60s timeout
+      const timeoutId = setTimeout(() => abortRef.current?.abort(), 60000);
+
       let response: string;
 
-      if (chatProvider === 'anthropic') {
-        response = await callAnthropic(chatApiKey, chatModel, message, chatMessages);
-      } else {
-        response = await callOpenAI(chatApiKey, chatModel, message, chatMessages);
+      try {
+        if (chatProvider === 'anthropic') {
+          response = await callAnthropic(chatApiKey, chatModel, message, chatMessages, abortRef.current.signal);
+        } else {
+          response = await callOpenAI(chatApiKey, chatModel, message, chatMessages, abortRef.current.signal);
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!response || !response.trim()) {
+        const emptyMsg: ChatMessage = {
+          id: 'msg-' + Date.now() + '-empty',
+          role: 'assistant',
+          content: 'The AI returned an empty response. Please try again or check your API key/model settings.',
+          timestamp: Date.now(),
+        };
+        addChatMessage(emptyMsg);
+        return;
       }
 
       const code = extractCodeFromMessage(response);
@@ -140,22 +163,52 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
       };
       addChatMessage(assistantMsg);
 
-      // Auto-apply if code was generated
       if (code) {
         handleApplyCode(code);
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        const timeoutMsg: ChatMessage = {
+          id: 'msg-' + Date.now() + '-timeout',
+          role: 'assistant',
+          content: 'Request timed out after 60 seconds. Please check your API key and try again.',
+          timestamp: Date.now(),
+        };
+        addChatMessage(timeoutMsg);
+        return;
+      }
+
+      let errText = 'Unknown error';
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message);
+          errText = parsed.error || err.message;
+        } catch {
+          errText = err.message;
+        }
+      } else {
+        errText = String(err);
+      }
       const errorMsg: ChatMessage = {
         id: 'msg-' + Date.now() + '-err',
         role: 'assistant',
-        content: `Error: ${(err as Error).message}`,
+        content: `Error: ${errText}`,
         timestamp: Date.now(),
       };
       addChatMessage(errorMsg);
     } finally {
       setIsLoading(false);
+      abortRef.current = null;
     }
   }, [input, isLoading, chatApiKey, chatModel, chatProvider, chatMessages, addChatMessage, handleApplyCode]);
+
+  const handleStop = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setIsLoading(false);
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -195,29 +248,62 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
         </div>
       </div>
 
-      {/* Settings */}
+      {/* Model selector - always visible */}
+      <div className="px-3 py-2 border-b border-studio-border bg-studio-bg/30 flex items-center gap-2">
+        <div className="flex gap-1">
+          {(['anthropic', 'openai'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setChatProvider(p)}
+              className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                chatProvider === p
+                  ? 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-300'
+                  : 'bg-studio-border/50 text-studio-text-dim hover:text-studio-text'
+              }`}
+            >
+              {p === 'anthropic' ? 'Anthropic' : 'OpenAI'}
+            </button>
+          ))}
+        </div>
+        <select
+          value={chatModel}
+          onChange={(e) => setChatModel(e.target.value)}
+          className="flex-1 min-w-0 px-1.5 py-0.5 text-[10px] bg-studio-bg border border-studio-border rounded text-studio-text outline-none focus:border-indigo-500"
+        >
+          {chatProvider === 'anthropic' ? (
+            <>
+              <option value="claude-sonnet-4-20250514">Sonnet 4</option>
+              <option value="claude-opus-4-20250514">Opus 4</option>
+              <option value="claude-haiku-4-20250514">Haiku 4</option>
+              <option value="claude-3-5-sonnet-20241022">3.5 Sonnet</option>
+            </>
+          ) : (
+            <>
+              <option value="gpt-4o">GPT-4o</option>
+              <option value="gpt-4o-mini">GPT-4o Mini</option>
+              <option value="gpt-4-turbo">GPT-4 Turbo</option>
+              <option value="o1">o1</option>
+              <option value="o3-mini">o3-mini</option>
+            </>
+          )}
+        </select>
+        {!chatApiKey && (
+          <button
+            onClick={() => setShowSettings(true)}
+            className="px-2 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap"
+          >
+            Set API Key
+          </button>
+        )}
+      </div>
+
+      {/* Settings (API key) */}
       {showSettings && (
         <div className="p-3 border-b border-studio-border bg-studio-bg/50">
-          <div className="mb-2">
-            <label className="text-xs text-studio-text-dim block mb-1">Provider</label>
-            <div className="flex gap-2">
-              {['anthropic', 'openai'].map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setChatProvider(p)}
-                  className={`flex-1 py-1 text-xs rounded transition-colors ${
-                    chatProvider === p
-                      ? 'bg-indigo-500/20 border border-indigo-500/40 text-indigo-300'
-                      : 'bg-studio-border text-studio-text-dim'
-                  }`}
-                >
-                  {p === 'anthropic' ? 'Anthropic' : 'OpenAI'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="mb-2">
-            <label className="text-xs text-studio-text-dim block mb-1">API Key</label>
+          <div>
+            <label className="text-xs text-studio-text-dim block mb-1">
+              {chatProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API Key
+            </label>
             <input
               type="password"
               value={chatApiKey}
@@ -225,16 +311,9 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
               className="w-full px-2.5 py-1.5 text-xs bg-studio-bg border border-studio-border rounded-lg text-studio-text outline-none focus:border-indigo-500"
               placeholder={chatProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'}
             />
-          </div>
-          <div>
-            <label className="text-xs text-studio-text-dim block mb-1">Model</label>
-            <input
-              type="text"
-              value={chatModel}
-              onChange={(e) => setChatModel(e.target.value)}
-              className="w-full px-2.5 py-1.5 text-xs bg-studio-bg border border-studio-border rounded-lg text-studio-text outline-none focus:border-indigo-500"
-              placeholder="Model name"
-            />
+            <p className="text-[10px] text-studio-text-dim mt-1">
+              Key is stored locally in your browser. Never sent to our servers.
+            </p>
           </div>
         </div>
       )}
@@ -243,6 +322,18 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {chatMessages.length === 0 && (
           <div className="text-center py-8">
+            {!chatApiKey ? (
+              <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                <p className="text-amber-300 text-xs font-medium mb-1">API Key Required</p>
+                <p className="text-studio-text-dim text-[10px]">
+                  Click &quot;Set API Key&quot; above or the gear icon to enter your API key.
+                </p>
+              </div>
+            ) : (
+              <p className="text-studio-text-dim text-xs mb-1">
+                Using <span className="text-indigo-400">{chatModel}</span>
+              </p>
+            )}
             <p className="text-studio-text-dim text-sm mb-2">
               Describe an animation and AI will generate the shader code
             </p>
@@ -287,10 +378,19 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
 
         {isLoading && (
           <div className="chat-message-assistant mr-4 px-3 py-2">
-            <div className="flex gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0s' }} />
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-              <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0s' }} />
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
+                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+              </div>
+              <span className="text-[10px] text-studio-text-dim">Generating shader...</span>
+              <button
+                onClick={handleStop}
+                className="text-[10px] text-red-400 hover:text-red-300 ml-auto"
+              >
+                Stop
+              </button>
             </div>
           </div>
         )}
@@ -310,7 +410,7 @@ export function ChatPanel({ onClose }: ChatPanelProps) {
                 handleSend();
               }
             }}
-            placeholder="Describe an animation..."
+            placeholder={chatApiKey ? 'Describe an animation...' : 'Set API key first...'}
             className="flex-1 px-3 py-2 text-sm bg-studio-bg border border-studio-border rounded-lg text-studio-text outline-none focus:border-indigo-500"
           />
           <button
@@ -335,6 +435,7 @@ async function callAnthropic(
   model: string,
   message: string,
   history: ChatMessage[],
+  signal: AbortSignal,
 ): Promise<string> {
   const messages = [
     ...history
@@ -356,6 +457,7 @@ async function callAnthropic(
       system: SYSTEM_PROMPT,
       messages,
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -364,7 +466,7 @@ async function callAnthropic(
   }
 
   const data = await res.json();
-  return data.content;
+  return data.content || '';
 }
 
 async function callOpenAI(
@@ -372,6 +474,7 @@ async function callOpenAI(
   model: string,
   message: string,
   history: ChatMessage[],
+  signal: AbortSignal,
 ): Promise<string> {
   const messages = [
     { role: 'system' as const, content: SYSTEM_PROMPT },
@@ -393,6 +496,7 @@ async function callOpenAI(
       model,
       messages,
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -401,5 +505,5 @@ async function callOpenAI(
   }
 
   const data = await res.json();
-  return data.content;
+  return data.content || '';
 }
